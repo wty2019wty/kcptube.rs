@@ -23,7 +23,10 @@ pub mod constant;
 pub mod packet;
 
 pub use constant::*;
-pub use packet::{DataLayer, Feature, ProtocolType};
+pub use packet::{
+    DataLayer, Feature, MuxDataWrapper, PacketLayer, PacketLayerData, PacketLayerFec,
+    PreConnectCustomAddress, ProtocolError, ProtocolType, SettingsWrapper,
+};
 
 /// 取当前 Unix 时间（秒）。
 ///

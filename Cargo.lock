@@ -404,6 +404,7 @@ name = "kcptube-config"
 version = "0.1.0"
 dependencies = [
  "kcptube-crypto",
+ "kcptube-protocol",
  "thiserror",
  "tracing",
 ]
@@ -419,6 +420,7 @@ dependencies = [
  "crc32fast",
  "hex",
  "ocb3",
+ "poly1305",
  "rand",
  "sha3",
  "thiserror",
@@ -442,6 +444,9 @@ dependencies = [
 [[package]]
 name = "kcptube-protocol"
 version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
 
 [[package]]
 name = "kcptube-relay"

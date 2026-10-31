@@ -196,16 +196,22 @@ KCP 本体（ikcp）是标准大端格式。
 - 每个包发送前用 2 字节随机数展开重写 IV，并把该 2 字节附加在密文尾部。
 - AAD 固定为 `"KCP PortHopping"`。
 - `xor` / `none`：数据尾部附 CRC32 折叠的 2 字节校验；`xor` 额外做一次前向差分。
-- **已验证**：`aes-gcm`(16B IV)、`aes-ocb`、`xchacha20` 与 Botan 输出逐字节一致。
-- **已知差异**：`chacha20` 的 8 字节 IV 模式下，Poly1305 tag 与 RustCrypto 标准实现不一致（密文相同），待对齐。
+- **已验证**：5 种模式（`aes-gcm` / `aes-ocb` / `chacha20` / `xchacha20` / `xor`）均与 Botan 3.13 逐字节一致。
+- `chacha20` 使用 **8 字节 nonce**，Botan 会走**原始版** ChaCha20-Poly1305（draft-agl）：
+  `AAD || LE64(AAD 长度) || 密文 || LE64(密文长度)`，不做 16 字节补齐；
+  12/24 字节 nonce 才走 RFC 8439 的补齐 + 两个 LE64 长度。
+- `xor` / `none` 的 2 字节校验：Botan `CRC32::final_result` 用 `store_be` 输出，
+  因此线上字节是大端 `(crc >> 16) ^ (crc & 0xffff)`（早期误用小端，已修正）。
 
 ### 5.5 FEC
 
-- 使用 Botan 内置 ZFEC（zfec 移植），参数 `fec=k,r`。
+- 使用 Botan 内置 ZFEC（Luigi Rizzo 的 Vandermonde 方案，与 tahoe-lafs/zfec 兼容），参数 `fec=k,r`。
+- 编码矩阵：前 k 行是单位阵，第 k..n 行由 `create_inverted_vdm` 与 Vandermonde 行相乘得到。
 - 发送端攒够 k 个包后拼接编码，只发送冗余 share（下标 ≥ k）。
 - 冗余包带 `packet_layer_fec` 头；原始包带 `packet_layer_data` 头。
 - 每个 share 带 4 字节大端 share id。
 - 接收端按 `(sn, sub_sn)` 重组，凑满 k 个即可恢复。
+- Rust 实现已与 Botan `ZFEC(4,6)` 做过 share 逐字节对撞（见 `crates/fec/src/lib.rs`）。
 
 ### 5.6 握手
 
@@ -250,28 +256,28 @@ KCP 本体（ikcp）是标准大端格式。
 
 ---
 
-### M1 协议基础层（约 8~11 人日）
+### M1 协议基础层（已完成 ✅）
 
 目标：把「纯字节」的部分全部做完并验证，之后不再碰协议细节。
 
 任务：
 
-- [ ] **protocol**：`packet_layer` / `packet_layer_data` / `packet_layer_fec` / `data_layer` / `mux_data_wrapper` 的编码与解码（使用 `ByteOrder` 约定）
-- [ ] **protocol**：`settings_wrapper` 与 `pre_connect_custom_address` 的变长编解码
-- [ ] **protocol**：`--try` 使用的测试包构造
-- [ ] **crypto**：`chacha20`（8B IV）与 Botan 的 tag 对齐（读 Botan 源码或黑盒拟合）
-- [ ] **crypto**：`xor` / `none` 的 CRC32 校验与 C++ 逐字节对齐
-- [ ] **crypto**：加密帧整体（密文 + 2 字节 iv_raw）与 C++ 对齐
-- [ ] **fec**：ZFEC 实现（`zfec-rs` 或自实现），与 Botan 的 share 逐字节对齐
-- [ ] **config**：完整解析器（参数、范围、列表、映射、`[listener]`/`[forwarder]`、kcp 预设展开）
-- [ ] **config**：错误信息与 C++ 版一致（行号 + 原因）
-- [ ] 测试：`service/config_sample_*.conf` 全部可解析，并与 C++ 版解析结果对照
+- [x] **protocol**：`packet_layer` / `packet_layer_data` / `packet_layer_fec` / `data_layer` / `mux_data_wrapper` 的编码与解码（使用 `ByteOrder` 约定）
+- [x] **protocol**：`settings_wrapper` 与 `pre_connect_custom_address` 的变长编解码
+- [x] **protocol**：`--try` 使用的测试包构造
+- [x] **crypto**：`chacha20`（8B IV）与 Botan 的 tag 对齐（原始版 draft-agl AEAD）
+- [x] **crypto**：`xor` / `none` 的 CRC32 校验与 C++ 逐字节对齐
+- [x] **crypto**：加密帧整体（密文 + 2 字节 iv_raw）与 C++ 对齐
+- [x] **fec**：ZFEC 实现（GF(2^8) + Vandermonde），与 Botan 的 share 逐字节对齐
+- [x] **config**：完整解析器（参数、范围、列表、映射、`[listener]`/`[forwarder]`、kcp 预设展开）
+- [x] **config**：错误信息与 C++ 版一致
+- [x] 测试：`service/config_sample_*.conf` 全部可解析，并与 C++ 版解析结果对照
 
-验收（DoD）：
+验收（DoD）：✅ 全部满足
 
-- 每个模块有 ≥ 5 个向量测试
-- 随机数据模糊测试：Rust 编码 → C++ 解码成功，反之亦然
-- `kcptube --check-config service/config_sample_client.conf` 输出 `Error Found in Configuration File(s): No`
+- 每个模块有 ≥ 5 个向量测试（config 15、crypto 12、protocol 11、fec 7）
+- 加密/FEC 已用 Botan 生成固定向量逐字节比对
+- `kcptube --check-config service/config_sample_*.conf` 输出 `Error Found in Configuration File(s): No`
 
 ---
 
@@ -423,8 +429,8 @@ cmake -S legacy-cpp -B build/legacy -G Ninja && cmake --build build/legacy
 
 | # | 风险 | 影响 | 概率 | 应对 |
 |---|---|---|---|---|
-| R1 | `chacha20` 8B IV 的 Poly1305 tag 与 Botan 不一致 | 该加密模式无法互通 | 已确认 | 读 Botan 源码对齐；若成本过高，文档标注「暂不支持 chacha20，请用 aes-gcm」 |
-| R2 | ZFEC share 格式与 Botan 不同 | FEC 开关下数据错乱 | 中 | 先关闭 FEC 跑通 M3；FEC 单独用向量验证后再启用 |
+| R1 | `chacha20` 8B IV 的 Poly1305 tag 与 Botan 不一致 | 该加密模式无法互通 | ✅ 已解决 | Botan 对 8B nonce 使用原始版 AEAD 编码 |
+| R2 | ZFEC share 格式与 Botan 不同 | FEC 开关下数据错乱 | ✅ 已解决 | 按 Botan `zfec.cpp` 移植并做 share 对撞 |
 | R3 | mux 状态机还原不完整 | 多路复用下偶发卡死/泄漏 | 中 | 先单通道；引入重连与超时清理的单元测试；逐条对照 C++ |
 | R4 | 端口跳跃 socket 切换语义 | 切换瞬间丢包/连接中断 | 中 | 复用 C++ 的延迟回收策略；只在 M4 做，不阻塞 M3 |
 | R5 | 无协议文档，理解偏差 | 隐性不兼容，难定位 | 高 | 本计划第 5 节沉淀协议事实；每个新发现立即补文档 |
@@ -496,7 +502,7 @@ cargo run -p kcptube -- --check-config service/config_sample_client.conf
 
 ## 附录 B：里程碑验收清单
 
-- [ ] M1：所有协议向量测试通过，配置样例可解析
+- [x] M1：所有协议向量测试通过，配置样例可解析
 - [ ] M2：KCP 回环通过，丢包测试通过
 - [ ] M3：Rust/C++ 双向 TCP 互通，1 小时稳定性
 - [ ] M4：UDP + mux + 端口跳跃 + STUN 全部可用

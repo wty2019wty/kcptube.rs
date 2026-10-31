@@ -8,11 +8,11 @@
 
 | 模块 | 状态 |
 |---|---|
-| 协议包层（`crates/protocol`） | 🟡 常量/枚举/头长度已对齐，编解码待实现 |
-| 加密层（`crates/crypto`） | 🟢 `aes-gcm` / `aes-ocb` / `xchacha20` 已验证与 Botan 输出一致；🟡 `chacha20`(8B IV)、`xor` 待对齐 |
-| FEC（`crates/fec`） | 🟡 接口已定，ZFEC 实现待完成 |
+| 协议包层（`crates/protocol`） | 🟢 包层/数据层/mux/settings_wrapper 编解码完成 |
+| 加密层（`crates/crypto`） | 🟢 5 种模式全部与 Botan 3.13 逐字节一致 |
+| FEC（`crates/fec`） | 🟢 ZFEC 与 Botan share 逐字节一致，含 `fec_container` |
 | KCP（`crates/kcp`） | 🟡 配置/接口已定，ikcp 移植待完成 |
-| 配置解析（`crates/config`） | 🟡 结构体已对齐，解析器待完成 |
+| 配置解析（`crates/config`） | 🟢 完整解析与校验，`--check-config` 可用 |
 | 传输层（`crates/transport`） | 🟡 接口已定（tokio） |
 | client / server / relay | 🟡 仅入口 |
 | 连通性测试（`--try`） | 🟡 未实现 |
@@ -59,6 +59,9 @@ cargo run -p kcptube -- --help
 - AES-GCM 的 IV 是 **16 字节**（不是常见的 12 字节），Rust 侧需 `AesGcm<Aes256, U16>`
 - `xchacha20` 在 C++ 里实际调用的是 Botan 的 `ChaCha20Poly1305` + 24 字节 IV，等价于 XChaCha20
 - 每个加密包尾部附 2 字节 `iv_raw`，用于还原 IV（见 `crates/crypto/src/cipher.rs`）
+- `chacha20` 的 8 字节 nonce 对应 Botan 的**原始版** ChaCha20-Poly1305（draft-agl），
+  与 RFC 8439 的差别只在 Poly1305 长度编码
+- `xor` / `none` 的 2 字节校验是大端 CRC32 折叠值（Botan `store_be`）
 - 双方系统时间差不得超过 **255 秒**
 - 包格式没有版本号：任何协议改动都需要两端同时升级
 

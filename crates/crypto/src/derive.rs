@@ -19,6 +19,8 @@ use std::str::FromStr;
 /// 配置文件中的取值为：`none` / `xor` / `aes-gcm` / `aes-ocb` / `chacha20` / `xchacha20`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EncryptionMode {
+    /// 配置里出现了无法识别的算法（C++ 的 `encryption_mode::unknow`）
+    Unknown,
     /// 未配置（C++ 的 `encryption_mode::empty`）
     Empty,
     /// 不加密，仅带 CRC32 校验

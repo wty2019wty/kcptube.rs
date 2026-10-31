@@ -5,6 +5,15 @@
 //! 目标：与 C++ 版（`legacy-cpp/src/shares/configurations.cpp`，约 1000 行）兼容，
 //! 同一份 `.conf` 在两端必须解析出等价参数。
 //!
+//! ## 解析流程（与 C++ `parse_from_args` 一致）
+//!
+//! 1. `parse_running_mode`：先只扫描 `mode=`，确定运行模式；
+//! 2. `parse_the_rest`：按当前分段（根 / `[listener]` / `[forwarder]`）解析其余参数；
+//! 3. `check_settings`：校验参数、展开 KCP 预设、计算 MTU、解析日志路径。
+//!
+//! 任一步骤产生错误都会立刻返回，错误文本尽量与 C++ 版逐字一致，
+//! 以便 `--check-config` 的输出可以直接对比。
+//!
 //! ## 已确认的参数名（来自 C++ `strhash` 分支）
 //!
 //! ```text
@@ -18,12 +27,15 @@
 //! ipv4_only  ipv6_only  blast
 //! fib_ingress  fib_egress  stun_server
 //! update_ipv4  update_ipv6  log_path
+//! [listener] [forwarder] [custom_input] [custom_input_tcp] [custom_input_udp]
 //! ```
 //!
 //! `kcp` 的取值预设：`regular1`~`regular5`、`fast1`~`fast6`、`manual`。
 
+mod parser;
+
 use kcptube_crypto::EncryptionMode;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -33,6 +45,10 @@ pub enum RunningMode {
     Server,
     Client,
     Relay,
+    /// relay 的入口段（`[listener]`）
+    RelayIngress,
+    /// relay 的出口段（`[forwarder]`）
+    RelayEgress,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,15 +68,24 @@ pub enum KcpMode {
     Manual,
 }
 
+/// IP 版本限制。C++ 用位掩码表示，两个选项同时为真时值为 3。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IpVersionOnly {
     NotSet,
     Ipv4,
     Ipv6,
+    /// `ipv4_only` 与 `ipv6_only` 同时出现（非法配置，校验阶段会报错）
+    Both,
+}
+
+impl IpVersionOnly {
+    pub const fn is_set(self) -> bool {
+        !matches!(self, IpVersionOnly::NotSet)
+    }
 }
 
 /// 一条配置（对应 C++ `user_settings`）。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserSettings {
     pub mode: RunningMode,
     pub kcp_setting: KcpMode,
@@ -99,14 +124,37 @@ pub struct UserSettings {
     pub ignore_destination_address: bool,
     pub ignore_destination_port: bool,
 
+    pub fib_ingress: i32,
+    pub fib_egress: i32,
+
     pub stun_server: String,
     pub update_ipv4_path: String,
     pub update_ipv6_path: String,
+
     pub log_directory: PathBuf,
+    pub log_ip_address: PathBuf,
+    pub log_messages: PathBuf,
+    pub log_status: PathBuf,
+
     pub config_filename: PathBuf,
 
-    /// 自定义 IP 映射：(输入地址, 输入端口) -> (映射地址, 映射端口)
-    pub user_input_mappings: HashMap<(String, u16), (String, u16)>,
+    /// 未限定协议的输入地址映射
+    pub user_input_mappings: BTreeMap<(String, u16), (String, u16)>,
+    /// 仅 TCP 的输入地址映射（`[custom_input_tcp]`）
+    pub user_input_mappings_tcp: BTreeMap<(String, u16), (String, u16)>,
+    /// 仅 UDP 的输入地址映射（`[custom_input_udp]`）
+    pub user_input_mappings_udp: BTreeMap<(String, u16), (String, u16)>,
+    /// 是否出现过 `[custom_input]` 段（即使段内为空，C++ 也不会报错）
+    pub has_user_input_mappings: bool,
+    /// 是否出现过 `[custom_input_tcp]` 段
+    pub has_user_input_mappings_tcp: bool,
+    /// 是否出现过 `[custom_input_udp]` 段
+    pub has_user_input_mappings_udp: bool,
+
+    /// relay 入口段（`[listener]`）
+    pub ingress: Option<Box<UserSettings>>,
+    /// relay 出口段（`[forwarder]`）
+    pub egress: Option<Box<UserSettings>>,
 }
 
 impl Default for UserSettings {
@@ -143,12 +191,24 @@ impl Default for UserSettings {
             ignore_listen_port: false,
             ignore_destination_address: false,
             ignore_destination_port: false,
+            fib_ingress: -1,
+            fib_egress: -1,
             stun_server: String::new(),
             update_ipv4_path: String::new(),
             update_ipv6_path: String::new(),
             log_directory: PathBuf::new(),
+            log_ip_address: PathBuf::new(),
+            log_messages: PathBuf::new(),
+            log_status: PathBuf::new(),
             config_filename: PathBuf::new(),
-            user_input_mappings: HashMap::new(),
+            user_input_mappings: BTreeMap::new(),
+            user_input_mappings_tcp: BTreeMap::new(),
+            user_input_mappings_udp: BTreeMap::new(),
+            has_user_input_mappings: false,
+            has_user_input_mappings_tcp: false,
+            has_user_input_mappings_udp: false,
+            ingress: None,
+            egress: None,
         }
     }
 }
@@ -161,16 +221,31 @@ pub enum ConfigError {
         #[source]
         source: std::io::Error,
     },
-    #[error("第 {line} 行：{message}")]
-    Parse { line: usize, message: String },
-    #[error("配置解析尚未实现（里程碑 1）")]
-    NotImplemented,
+    /// 与 C++ 版一致的错误文本
+    #[error("{0}")]
+    Message(String),
 }
 
 impl UserSettings {
     /// 从若干行文本解析配置（每行一条 `key=value`）。
-    pub fn parse_lines(_lines: &[String]) -> Result<Self, Vec<ConfigError>> {
-        Err(vec![ConfigError::NotImplemented])
+    pub fn parse_lines(lines: &[String]) -> Result<Self, Vec<ConfigError>> {
+        let mut settings = Self::default();
+        let mut errors = parser::parse_running_mode(lines, &mut settings);
+        if !errors.is_empty() {
+            return Err(to_errors(errors));
+        }
+
+        errors = parser::parse_the_rest(lines, &mut settings);
+        if !errors.is_empty() {
+            return Err(to_errors(errors));
+        }
+
+        parser::check_settings(&mut settings, &mut errors);
+        if errors.is_empty() {
+            Ok(settings)
+        } else {
+            Err(to_errors(errors))
+        }
     }
 
     /// 从文件解析配置。
@@ -185,14 +260,55 @@ impl UserSettings {
 
         let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
         let mut settings = Self::parse_lines(&lines)?;
-        settings.config_filename = path;
+        settings.config_filename = path.clone();
+
+        // 对应 C++ main.cpp：log_status = log_directory / (配置文件文件名 + "_status.log")
+        if !settings.log_directory.as_os_str().is_empty() {
+            let file_name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            settings.log_status = settings
+                .log_directory
+                .join(format!("{file_name}_status.log"));
+        }
+
         Ok(settings)
     }
+
+    /// 该配置是否启用了 FEC
+    pub const fn fec_enabled(&self) -> bool {
+        self.fec_original_packet_count > 0 && self.fec_redundant_packet_count > 0
+    }
+
+    /// 日志文件是否可用（对应 C++ `log_status` 是否为空）
+    pub fn has_status_log(&self) -> bool {
+        !self.log_status.as_os_str().is_empty()
+    }
+}
+
+fn to_errors(messages: Vec<String>) -> Vec<ConfigError> {
+    messages.into_iter().map(ConfigError::Message).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+
+    fn parse(text: &str) -> Result<UserSettings, Vec<ConfigError>> {
+        let lines: Vec<String> = text.lines().map(|s| s.to_string()).collect();
+        UserSettings::parse_lines(&lines)
+    }
+
+    fn sample(name: &str) -> String {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("service")
+            .join(name);
+        std::fs::read_to_string(path).expect("样例配置应存在")
+    }
 
     #[test]
     fn defaults_match_cpp_defaults() {
@@ -201,5 +317,224 @@ mod tests {
         assert_eq!(settings.dynamic_port_refresh, -1);
         assert!(settings.blast);
         assert_eq!(settings.encryption, EncryptionMode::Empty);
+        assert_eq!(settings.fib_ingress, -1);
+    }
+
+    #[test]
+    fn parse_client_sample() {
+        let settings = parse(&sample("config_sample_client.conf")).expect("应解析成功");
+        assert_eq!(settings.mode, RunningMode::Client);
+        assert_eq!(settings.kcp_setting, KcpMode::Regular3);
+        assert_eq!(settings.listen_ports, vec![5099]);
+        assert_eq!(settings.destination_ports, vec![30000]);
+        assert_eq!(settings.destination_address_list, vec!["127.0.0.1"]);
+        assert_eq!(settings.encryption, EncryptionMode::AesGcm);
+        assert_eq!(settings.encryption_password, "qwerty1234");
+
+        // regular3 预设
+        assert_eq!(settings.kcp_nodelay, 0);
+        assert_eq!(settings.kcp_interval, 1);
+        assert_eq!(settings.kcp_resend, 2);
+        assert_eq!(settings.kcp_nc, 1);
+        assert_eq!(settings.kcp_sndwnd, 1024);
+        assert_eq!(settings.kcp_rcvwnd, 1024);
+
+        // 未指定 mtu 时使用默认值
+        assert_eq!(settings.kcp_mtu, 1418);
+        // 未指定 dport_refresh 时使用默认值
+        assert_eq!(settings.dynamic_port_refresh, 60);
+        assert_eq!(settings.udp_timeout, 180);
+    }
+
+    #[test]
+    fn parse_server_range_sample() {
+        let settings = parse(&sample("config_sample_server_range.conf")).expect("应解析成功");
+        assert_eq!(settings.mode, RunningMode::Server);
+        assert_eq!(settings.listen_ports.len(), 10001);
+        assert_eq!(settings.listen_ports.first(), Some(&30000));
+        assert_eq!(settings.listen_ports.last(), Some(&40000));
+        assert_eq!(settings.kcp_sndwnd, 4096);
+        assert_eq!(settings.kcp_rcvwnd, 4096);
+    }
+
+    #[test]
+    fn port_lists_and_ranges() {
+        assert_eq!(
+            parser::string_to_port_numbers("3000-3002", &mut Vec::new(), "listen"),
+            vec![3000, 3001, 3002]
+        );
+        assert_eq!(
+            parser::string_to_port_numbers("3005, 3001,3001", &mut Vec::new(), "listen"),
+            vec![3001, 3005]
+        );
+        assert_eq!(
+            parser::string_to_address_list("b.com, a.com ,a.com"),
+            vec!["a.com", "b.com"]
+        );
+    }
+
+    #[test]
+    fn invalid_port_reports_cpp_message() {
+        let mut errors = Vec::new();
+        let ports = parser::string_to_port_numbers("0", &mut errors, "listen");
+        assert!(ports.is_empty());
+        assert_eq!(errors, vec!["invalid listen_port number: 0"]);
+    }
+
+    #[test]
+    fn missing_mode_is_rejected() {
+        let errors = parse("listen_port=5099").expect_err("缺少 mode 应报错");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.to_string() == "running mode is not set")
+        );
+    }
+
+    #[test]
+    fn unknown_option_is_rejected() {
+        let errors = parse("mode=client\nfoo=bar").expect_err("未知参数应报错");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.to_string() == "unknow option: foo=bar")
+        );
+    }
+
+    #[test]
+    fn kcp_presets_match_cpp() {
+        let cases = [
+            ("fast1", (1, 0, 2, 1, 2048)),
+            ("fast2", (2, 0, 2, 1, 2048)),
+            ("fast3", (1, 1, 3, 1, 2048)),
+            ("fast4", (2, 1, 3, 1, 2048)),
+            ("fast5", (1, 1, 4, 1, 2048)),
+            ("fast6", (2, 1, 4, 1, 2048)),
+            ("regular1", (1, 1, 5, 1, 1024)),
+            ("regular2", (2, 1, 5, 1, 1024)),
+            ("regular4", (0, 15, 2, 1, 1024)),
+            ("regular5", (0, 30, 2, 1, 1024)),
+        ];
+
+        for (name, (nodelay, interval, resend, nc, wnd)) in cases {
+            let text = format!(
+                "mode=client\nlisten_port=5099\ndestination_port=80\ndestination_address=127.0.0.1\nkcp={name}"
+            );
+            let settings = parse(&text).expect("应解析成功");
+            assert_eq!(settings.kcp_nodelay, nodelay, "{name}");
+            assert_eq!(settings.kcp_interval, interval, "{name}");
+            assert_eq!(settings.kcp_resend, resend, "{name}");
+            assert_eq!(settings.kcp_nc, nc, "{name}");
+            assert_eq!(settings.kcp_sndwnd, wnd, "{name}");
+        }
+    }
+
+    #[test]
+    fn fec_and_mtu_calculation() {
+        let settings =
+            parse("mode=server\nlisten_port=30000\ndestination_port=80\ndestination_address=127.0.0.1\nfec=10:3\nmtu=1400")
+                .expect("应解析成功");
+        assert_eq!(settings.fec_original_packet_count, 10);
+        assert_eq!(settings.fec_redundant_packet_count, 3);
+        assert!(settings.fec_enabled());
+        // 1400 - iv_checksum_block(2) - (ip 36 + udp 4 + data 1 + fec 13 + container 2)
+        assert_eq!(settings.kcp_mtu, 1400 - 2 - 56);
+    }
+
+    #[test]
+    fn fec_bad_format_is_rejected() {
+        let errors = parse("mode=server\nlisten_port=30000\nfec=10").expect_err("应报错");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.to_string() == "invalid fec format: 10")
+        );
+    }
+
+    #[test]
+    fn bandwidth_units_match_cpp() {
+        let mut errors = Vec::new();
+        assert_eq!(parser::bandwidth_from_string("8K", &mut errors), 1024);
+        assert_eq!(parser::bandwidth_from_string("8k", &mut errors), 1000);
+        assert_eq!(
+            parser::bandwidth_from_string("8M", &mut errors),
+            1024 * 1024
+        );
+        assert_eq!(parser::bandwidth_from_string("64", &mut errors), 0);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn custom_input_mapping() {
+        let text = "\
+mode=client
+listen_port={}
+destination_port=80
+destination_address=127.0.0.1
+[custom_input]
+127.0.0.1:5099 -> 10.0.0.1:80
+[custom_input_tcp]
+127.0.0.1:5100 -> example.com:443
+";
+        let settings = parse(text).expect("应解析成功");
+        assert!(settings.listen_ports.is_empty());
+        assert_eq!(
+            settings
+                .user_input_mappings
+                .get(&("127.0.0.1".to_string(), 5099)),
+            Some(&("10.0.0.1".to_string(), 80))
+        );
+        assert_eq!(
+            settings
+                .user_input_mappings_tcp
+                .get(&("127.0.0.1".to_string(), 5100)),
+            Some(&("example.com".to_string(), 443))
+        );
+    }
+
+    #[test]
+    fn relay_sections() {
+        let text = "\
+mode=relay
+[listener]
+listen_port=30000
+[forwarder]
+destination_address=127.0.0.1
+destination_port=80
+";
+        let settings = parse(text).expect("应解析成功");
+        assert_eq!(settings.mode, RunningMode::Relay);
+        let ingress = settings.ingress.as_ref().expect("listener 段");
+        let egress = settings.egress.as_ref().expect("forwarder 段");
+        assert_eq!(ingress.mode, RunningMode::RelayIngress);
+        assert_eq!(ingress.listen_ports, vec![30000]);
+        assert_eq!(egress.mode, RunningMode::RelayEgress);
+        assert_eq!(egress.destination_ports, vec![80]);
+        // relay 的 udp_timeout 会被追加 5 秒
+        assert_eq!(ingress.udp_timeout, 185);
+        assert_eq!(egress.udp_timeout, 185);
+    }
+
+    #[test]
+    fn relay_requires_both_sections() {
+        let errors = parse("mode=relay\n[listener]\nlisten_port=30000").expect_err("应报错");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.to_string() == "[forwarder] is missing")
+        );
+    }
+
+    #[test]
+    fn both_ip_versions_are_rejected() {
+        let errors = parse(
+            "mode=server\nlisten_port=30000\ndestination_port=80\ndestination_address=127.0.0.1\nipv6_only=yes\nipv4_only=yes",
+        )
+        .expect_err("应报错");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.to_string() == "Both ipv4_only and ipv6_only are set as true")
+        );
     }
 }

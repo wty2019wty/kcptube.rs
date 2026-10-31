@@ -11,15 +11,15 @@
 | 指标 | 数值 |
 |---|---|
 | C++ 参考实现 | 14,308 行（`legacy-cpp/`，含 ikcp 1,109 行） |
-| Rust 代码 | 约 1,538 行（14 个 `.rs` 文件） |
+| Rust 代码 | 约 3,738 行（15 个 `.rs` 文件） |
 | crate 数 | 10（9 个 lib + 1 个 bin） |
-| 单元测试 | 21 个，全部通过 |
-| 整体完成度 | **M0 完成，M1 进行中（约 15%）** |
+| 单元测试 | 48 个，全部通过 |
+| 整体完成度 | **M0 完成，M1 完成，M2 待开始** |
 
 ```
 M0 基线            ██████████ 100%
-M1 协议基础层       ██░░░░░░░░  15%   ← 当前
-M2 KCP/传输         ░░░░░░░░░░   0%
+M1 协议基础层      ██████████ 100%
+M2 KCP/传输        ░░░░░░░░░░   0%   ← 下一步
 M3 TCP 最小互通     ░░░░░░░░░░   0%
 M4 完整模式         ░░░░░░░░░░   0%
 M5 relay/跨平台     ░░░░░░░░░░   0%
@@ -31,29 +31,29 @@ M5 relay/跨平台     ░░░░░░░░░░   0%
 
 | 模块 | C++ 对应 | 状态 | 说明 |
 |---|---|---|---|
-| `crates/protocol` | `connections.hpp` 包结构、`share_defines.hpp` 常量 | 🟡 30% | 常量、`Feature`/`ProtocolType`、头长度、字节序工具已实现并有测试；**包编解码未实现** |
-| `crates/crypto` | `aead.hpp`、`data_operations.cpp`、`simple_hashing.hpp` | 🟢 70% | 密钥/IV 派生、IV 展开、AES-GCM/OCB/XChaCha、xor 差分已完成；`chacha20`(8B IV) 待对齐；与 Botan 向量对撞通过 |
-| `crates/fec` | `data_operations.cpp` + Botan ZFEC | 🟡 15% | 参数校验与接口已定；编码/解码返回 `NotImplemented` |
-| `crates/kcp` | `3rd_party/ikcp.cpp`、`networks/kcp.cpp` | 🟡 10% | 配置与接口已定；核心协议未移植 |
-| `crates/config` | `configurations.cpp`（1010 行） | 🟡 20% | `UserSettings` 字段已与 C++ 对齐；解析器返回 `NotImplemented` |
-| `crates/transport` | `connections.cpp`、`kcp_updater.cpp`、`mux_tunnel.cpp` | 🟡 10% | tokio 版接口骨架；无实现 |
+| `crates/protocol` | `connections.hpp` 包结构、`share_defines.hpp` 常量 | 🟢 100% | 常量、枚举、包层/数据层/mux/settings_wrapper 编解码全部完成并有测试 |
+| `crates/crypto` | `aead.hpp`、`data_operations.cpp`、`simple_hashing.hpp` | 🟢 100% | 5 种加密模式全部与 Botan 向量逐字节一致（含 `chacha20` 8B IV 的原始版 AEAD） |
+| `crates/fec` | `data_operations.cpp` + Botan ZFEC | 🟢 100% | ZFEC 矩阵/GF(2^8)/编解码已移植，share 与 Botan 3.13 逐字节一致；含 `fec_container` 打包 |
+| `crates/kcp` | `3rd_party/ikcp.cpp`、`networks/kcp.cpp` | 🟡 10% | 配置与接口已定；核心协议未移植（M2） |
+| `crates/config` | `configurations.cpp`（1010 行） | 🟢 100% | 两遍解析、预设展开、MTU、relay 分段、自定义映射、日志路径、错误文本全部对齐 |
+| `crates/transport` | `connections.cpp`、`kcp_updater.cpp`、`mux_tunnel.cpp` | 🟡 10% | tokio 版接口骨架；无实现（M2） |
 | `crates/client` | `client.cpp`（1917 行） | 🟡 5% | 仅入口 |
 | `crates/server` | `server.cpp`（1323 行） | 🟡 5% | 仅入口 |
-| `crates/relay` | `relay.cpp`（1802 行） | 🟡 5% | 仅入口；ingress/egress 尚未拆分 |
-| `crates/kcptube` | `main.cpp` | 🟢 80% | clap 参数、usage、`--try`/`--check-config` 骨架；配置解析未完成 |
+| `crates/relay` | `relay.cpp`（1802 行） | 🟡 5% | 仅入口；配置已能拆出 ingress/egress |
+| `crates/kcptube` | `main.cpp` | 🟢 90% | clap 参数、usage、`--check-config` 可用；`--try` 仍为骨架 |
 | `--try` 连通性测试 | `tester.cpp`（392 行） | ❌ 0% | 未开始，计划 M5，需新建 `kcptube-tester` crate |
 
 ---
 
-## 3. 已完成项（M0）
+## 3. 已完成项
 
-### 3.1 环境与工具链
+### 3.1 环境与工具链（M0）
 
 - [x] Rust 1.96（`x86_64-pc-windows-gnu`），依赖源：官方 crates.io
 - [x] MSYS2 GCC 16.2 + CMake 4.4.5 + asio 1.34 + Botan 3.13
 - [x] C++ 参考实现编译成功并能运行（`kcptube version 20260329`）
 
-### 3.2 工程骨架
+### 3.2 工程骨架（M0）
 
 - [x] workspace（`resolver = 3`，edition 2024）
 - [x] 10 个 crate 的目录、`Cargo.toml`、模块划分
@@ -62,26 +62,40 @@ M5 relay/跨平台     ░░░░░░░░░░   0%
 - [x] CI：fmt / clippy（`-D warnings`）/ test，ubuntu + windows 矩阵
 - [x] 新 `README.md`（Rust 版说明），原文档在 `legacy-cpp/`
 
-### 3.3 协议与加密的实证结论
+### 3.3 协议基础层（M1）
 
-**加密向量对撞**（key = `[0x01;32]`，IV = `[0x02;N]`，AAD = `"KCP PortHopping"`，明文 `hello kcptube!!`）：
+- [x] **protocol**：`packet_layer` / `packet_layer_data` / `packet_layer_fec` / `data_layer` / `mux_data_wrapper` 编解码
+- [x] **protocol**：`settings_wrapper`（26 字节头 + NUL 结尾 IP，线上 27 字节起）与 `pre_connect_custom_address`
+- [x] **protocol**：`initialise` / `keep_alive` / `keep_alive_response` / `disconnect` / `failure` / `raw_data` / `mux_*` 包构造与解析（含 `--try` 使用的 `test_connection`）
+- [x] **crypto**：`chacha20` 8 字节 nonce 与 Botan 对齐（原始版 draft-agl AEAD，非 RFC 8439）
+- [x] **crypto**：`xor` / `none` 的 CRC32 校验字节序修正（Botan `store_be`）
+- [x] **fec**：GF(2^8) 表、`create_inverted_vdm`、编码矩阵、`invert_matrix`、编解码、`fec_container`
+- [x] **config**：完整解析器（两遍解析、范围/列表、`->` 映射、kcp 预设、relay 分段、MTU、日志路径）
+- [x] **config**：错误文本与 C++ 版逐字对齐
+- [x] 测试：4 份样例配置全部通过 `--check-config`
+
+### 3.4 向量对撞结果
+
+**加密**（key = `[0x01;32]`，IV = `[0x02;N]`，AAD = `"KCP PortHopping"`，明文 `hello kcptube!!`）：
 
 | 模式 | IV 长度 | Botan 输出（前 16 字节） | Rust | 结论 |
 |---|---:|---|---|---|
-| `aes-gcm` | 16 | `1853FB26B0E14477A…` | 相同 | ✅ 完全一致 |
-| `aes-ocb` | 12 | `C581B50BAB10C402F…` | 相同 | ✅ 完全一致 |
-| `xchacha20` | 24 | `A4035A83C557972ED…` | 相同 | ✅ 完全一致 |
-| `chacha20` | 12 | `8E799E42E28383B90…` | 相同 | ✅ 完全一致 |
-| `chacha20` | 8 | `C80B52B6…F81C62` | `C80B52B6…F66AA4` | ⚠️ 密文相同，**tag 不同** |
+| `aes-gcm` | 16 | `1853FB26B0E14477A…` | 相同 | ✅ |
+| `aes-ocb` | 12 | `C581B50BAB10C402F…` | 相同 | ✅ |
+| `xchacha20` | 24 | `A4035A83C557972ED…` | 相同 | ✅ |
+| `chacha20` | 8 | `C80B52B63083322CD6C4169457B3C24ACFDD51C9A9C845910F8DFC7F90AD1A` | 相同 | ✅ |
 
-完整向量见 `crates/crypto/src/cipher.rs::vectors_match_botan`。
+> `chacha20` 的旧记录 `C80B52B6…F81C62` 已作废；用 `botan cipher` 重新生成的完整向量写入
+> `crates/crypto/src/cipher.rs::chacha20_8byte_nonce_matches_botan`。
 
-**其它已确认的协议事实**（已写入计划文档第 5 节）：
+**FEC**（Botan `ZFEC(4,6)`，输入 `00 01 … 0F`）：
 
-- `timestamp` 小端，`sn` / `kcp_conv` / `connection_id` 大端
-- 时间差容忍上限 255 秒
-- 包尾 2 字节 `iv_raw`，用于还原每包 IV
-- 配置解析对 key/value 统一转小写（`AES-GCM` 合法）
+| share | Botan 输出 |
+|---|---|
+| 4 | `88 89 8A 8B` |
+| 5 | `24 25 26 27` |
+
+Rust 输出完全一致，见 `crates/fec/src/lib.rs::vectors_match_botan_zfec`。
 
 ---
 
@@ -89,20 +103,21 @@ M5 relay/跨平台     ░░░░░░░░░░   0%
 
 | crate | 测试数 | 覆盖内容 |
 |---|---:|---|
-| `protocol` | 5 | 常量推导、位域布局、feature 枚举值、头长度、字节序 |
-| `crypto` | 10 | 向量对撞、AEAD 往返、篡改检测、xor 可逆、IV 展开、模式解析 |
-| `fec` | 2 | 参数校验、禁用状态 |
+| `protocol` | 11 | 位域、字节序、包层/FEC/mux/settings 编解码、截断输入 |
+| `crypto` | 12 | 5 种模式向量、往返、篡改检测、IV 展开、CRC32 字节序 |
+| `fec` | 7 | GF 表、Botan 向量、往返、缺 share、container |
 | `kcp` | 2 | 默认配置、conv |
-| `config` | 1 | 默认值与 C++ 对齐 |
+| `config` | 15 | 样例配置、端口/地址、预设、FEC/MTU、relay、自定义映射、错误文本 |
 | `transport` | 1 | 构造 |
-| **合计** | **21** | 全部通过 |
+| **合计** | **48** | 全部通过 |
 
 命令与结果：
 
 ```
 cargo fmt --all -- --check        → 0
 cargo clippy --workspace --all-targets -- -D warnings → 0
-cargo test --workspace            → 21 passed, 0 failed
+cargo test --workspace            → 48 passed, 0 failed
+cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 ```
 
 ---
@@ -111,35 +126,28 @@ cargo test --workspace            → 21 passed, 0 failed
 
 | # | 问题 | 影响 | 计划 |
 |---|---|---|---|
-| 1 | `chacha20` 8 字节 IV 的 Poly1305 tag 与 Botan 不一致（密文一致） | 该模式无法互通 | M1 对齐，或文档标注暂不支持 |
-| 2 | ZFEC 未实现，且 `zfec-rs` 仅 0.1 版 | FEC 功能不可用 | M1，先做向量对撞再启用 |
-| 3 | `config` 解析器未实现（返回 `NotImplemented`） | 无法读取真实配置 | M1 优先 |
-| 4 | `protocol` 只有结构定义，没有编解码 | 无法收发数据 | M1 |
-| 5 | `kcp` / `transport` / 三种模式均只有接口 | 无法运行 | M2/M3 |
-| 6 | `client/server/relay` 的 `run()` 都返回 `NotImplemented` | `cargo run -- config.conf` 会提示未实现 | 随里程碑逐步替换 |
-| 7 | `Relay::new` 在 `main.rs` 中用同一份配置占位 | relay 无法真实工作 | 配置解析支持 `[listener]`/`[forwarder]` 后修正 |
-| 8 | `EncryptionMode::from_str` 区分大小写 | 直接调用会拒绝 `AES-GCM` | 在 `config` 层先 `to_lowercase()`（C++ 行为），已记录 |
-| 9 | `Cargo.lock` 未提交 | 依赖版本不稳定 | 建议随骨架一起提交 |
-| 10 | 重新编译 `legacy-cpp/` 需要手动加参数 | 影响互通测试效率 | 见下方「附录：C++ 参考版编译」 |
-| 11 | 协议无版本字段，锁定 `20260329` | 上游升级需同步 | 每次上游发版做 diff 并记录 |
+| 1 | `kcp` / `transport` / 三种模式均只有接口 | 无法运行 | M2/M3 |
+| 2 | `client/server/relay` 的 `run()` 都返回 `NotImplemented` | 启动会提示未实现 | 随里程碑逐步替换 |
+| 3 | `--try` 仅打印“尚未实现” | 连通性测试不可用 | M5 新建 `kcptube-tester` |
+| 4 | relay 根配置的 `udp_timeout` 增量等细节尚未在运行层验证 | 仅影响 relay | M5 端到端测试 |
+| 5 | `Cargo.lock` 未提交 | 依赖版本不稳定 | 建议提交 |
+| 6 | 重新编译 `legacy-cpp/` 需要手动加参数 | 影响互通测试效率 | 见附录 |
+| 7 | 协议无版本字段，锁定 `20260329` | 上游升级需同步 | 每次上游发版做 diff 并记录 |
+| 8 | `ipv4_only` / `ipv6_only` 的顺序语义照搬 C++（后者覆盖前者） | 同时出现时行为与直觉不同 | 保持兼容，文档说明 |
 
 ---
 
-## 6. 下一步（M1 任务清单）
+## 6. 下一步（M2 任务清单）
 
-按依赖顺序：
+1. [ ] **kcp**：移植 `ikcp.cpp`（send/input/recv/update/flush/check，改版窗口函数）
+2. [ ] **kcp**：`SetBandwidth`、`ResetWindowValues`、`WaitQueue*`
+3. [ ] **kcp**：与 C++ 版「同一输入序列 → 同一输出包序列」对撞
+4. [ ] **transport**：`KcpUpdater`（tokio + 最小堆）
+5. [ ] **transport**：TCP/UDP 套接字封装（`socket2`、`SO_REUSEADDR`、`SO_SETFIB`）
+6. [ ] **transport**：加密 → 包层 → KCP → UDP 流水线
+7. [ ] 测试：回环吞吐/延迟，丢包 10% 下正确性
 
-1. [ ] `config`：实现解析器（先跑通 `service/config_sample_*.conf`）
-   - 两遍解析（`mode` 优先）
-   - key/value 转小写、注释、`->` 映射、端口范围/列表
-   - kcp 预设展开（`regular1-5`、`fast1-6`、`manual`）
-   - `[listener]` / `[forwarder]`（relay）
-2. [ ] `protocol`：包层编解码（`packet_layer*`、`data_layer`、`settings_wrapper`）
-3. [ ] `crypto`：补齐 `xor` / `none` 的 CRC32 对齐 + `chacha20` 8B tag
-4. [ ] `fec`：ZFEC 实现与向量验证
-5. [ ] 建立 `tests/vectors/`：由 C++ 程序生成、Rust 端消费的固定向量
-
-完成标准：`cargo test --workspace` 覆盖 M1 全部模块；`--check-config` 对样例配置返回 `No`。
+完成标准：两个进程内 KCP 端点互通，丢包场景不丢数据。
 
 ---
 
@@ -148,6 +156,7 @@ cargo test --workspace            → 21 passed, 0 failed
 | 日期 | 内容 |
 |---|---|
 | 2026-10-31 | 完成 M0：C++ 代码迁入 `legacy-cpp/`；建立 Rust workspace 骨架；加密 4 种模式与 Botan 向量对撞（3 种完全一致）；CI 落地；编写计划与进度文档 |
+| 2026-10-31 | 完成 M1：配置解析器、协议包层编解码、`chacha20` 8B IV 与 CRC32 对齐、ZFEC 与 `fec_container`；测试从 21 增至 48；`--check-config` 对 4 份样例返回 `No` |
 
 ---
 
