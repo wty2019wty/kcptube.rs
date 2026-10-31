@@ -277,6 +277,7 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 | 7 | `ignore_destination_*` / `[custom_input*]` 映射转发未接入；mux `pre_connect_custom_address` 发送侧待补 | `ignore_*` 与自定义映射场景不可用 | M4 剩余 |
 | 8 | STUN / DDNS 未实现（已从 M4 移入 M6） | 公网地址探测与动态 DNS 不可用 | M6 |
 | 9 | 端口跳跃时机不同：Rust 对所有数据通道按 `dport_refresh` 周期主动跳跃；C++ 跳过 TCP，且仅在链路空闲超时后探测 | 与 C++ 的跳跃频率/触发条件不一致，可能影响 QoS 观察 | 评估是否对齐 C++ 或保留现状并文档说明 |
+| 10 | 版本号显示两套：`--version` 输出 crate 版本（`env!("CARGO_PKG_VERSION")`），启动横幅/usage 输出 `APP_VERSION`（`20260329`） | 同一程序自报两个版本号，易被误判为不一致 | 有意区分（crate 版本 vs 协议兼容目标版本）：横幅须与 C++ 输出逐字一致；`--version` 为 Rust 侧新增（C++ 无此参数）；保持现状，代码注释已说明 |
 
 ---
 
@@ -315,6 +316,7 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 | 2026-10-31 | docs: 按代码现状校准文档：更新 crate 清单、加密模式数量、代码行数与 FEC/mux 完成状态；补充 `ipv4_only`/`ipv6_only`、客户端目标选择、`blast`、带宽未应用等已知差异 |
 | 2026-10-31 | **M4 端口跳跃与默认参数**：服务端监听完整端口范围并共享会话表，按来源自动重绑；客户端 `dport_refresh` 探测与切换 socket、随机目标选择、只监听首个端口；接入 `blast`、带宽 `SetBandwidth` / `ResetWindowValues`、`ipv4_only` / `ipv6_only`；新增通道重绑、blast、带宽、地址族与 `port_hopping_keeps_connection` 测试；测试增至 96；STUN/DDNS 调整为 M6 |
 | 2026-10-31 | **C++ 互通验证**：Rust 客户端→C++ 服务端（TCP/UDP）均跨越 2 次跳跃持续收发；C++ 客户端→Rust 服务端 UDP 跨越跳跃持续收发。期间修复服务端握手通道把 `test_connection` 错回为 `keep_alive_response` 的兼容性问题；记录 C++ 端口跳跃仅覆盖 UDP/mux 且由空闲超时触发的语义差异 |
+| 2026-10-31 | 版本号显示方式：`--version` 改用 crate 版本（`APP_DISPLAY_VERSION`），与协议兼容目标版本 `APP_VERSION` 区分；提取 `print_version_banner` 统一横幅输出并注明须与 C++ 逐字一致；已知问题登记 #10 |
 
 ---
 

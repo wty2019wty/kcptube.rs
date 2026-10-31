@@ -22,8 +22,13 @@ use kcptube_relay::Relay;
 use kcptube_server::Server;
 use std::path::PathBuf;
 
-/// 程序自身版本号：直接取本 crate（即 workspace `Cargo.toml`）里声明的版本，
-/// 与 `APP_VERSION`（对齐 C++ 版的协议兼容目标版本）区分开。
+/// 程序自身版本号：取 `crates/kcptube/Cargo.toml` 声明的 package 版本
+/// （当前经 `version.workspace = true` 继承自根 `Cargo.toml`，两者暂时相同）。
+///
+/// 与 `APP_VERSION`（对齐 C++ 版的协议兼容目标版本）区分开：本常量仅用于
+/// `--version`（C++ 版没有该参数）；启动横幅/用法输出仍用 `APP_VERSION`，
+/// 以保持与 `legacy-cpp/src/main.cpp` 的输出逐字一致。
+/// 两个版本号不一致属有意设计，详见 `docs/progress.md` 已知问题 #10。
 const APP_DISPLAY_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Parser, Debug)]
@@ -46,8 +51,14 @@ struct Cli {
     check_config: bool,
 }
 
-fn print_usage() {
+/// 版本横幅：刻意使用 `APP_VERSION`（协议兼容目标版本）而非 `APP_DISPLAY_VERSION`，
+/// 以保持与 `legacy-cpp/src/main.cpp` 的启动/用法输出逐字一致。
+fn print_version_banner() {
     println!("{APP_NAME} version {APP_VERSION}");
+}
+
+fn print_usage() {
+    print_version_banner();
     println!("Usage: {APP_NAME} config1.conf");
     println!("       {APP_NAME} config1.conf config2.conf...");
     println!("Connectivity Testing:");
@@ -76,7 +87,7 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    println!("{APP_NAME} version {APP_VERSION}");
+    print_version_banner();
 
     let mut profiles: Vec<UserSettings> = Vec::new();
     let mut error_found = false;
