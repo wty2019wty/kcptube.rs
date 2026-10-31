@@ -34,6 +34,9 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::Mutex;
 
+/// 单条 KCP 消息的最大长度（KCP 会把分片重组成一条消息，可能远大于单个 UDP 包）。
+pub const MAX_INNER_MESSAGE: usize = 65536;
+
 /// 单个 UDP 数据报的加解密与包层处理（对应 C++ `encrypt_data` + `create_packet`）。
 ///
 /// 顺序：`data_layer 负载` → 加 `packet_layer` 时间戳 → 加密（尾部带 `iv_raw`）。

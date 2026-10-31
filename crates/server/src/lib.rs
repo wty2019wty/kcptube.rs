@@ -21,8 +21,8 @@ use kcptube_protocol::packet::{
     response_initialise_packet, unpack_inner,
 };
 use kcptube_transport::{
-    KcpChannel, PacketCodec, TcpSession, TransportError, UdpEndpoint, now_ms, now_secs,
-    resolve_endpoint,
+    KcpChannel, MAX_INNER_MESSAGE, PacketCodec, TcpSession, TransportError, UdpEndpoint, now_ms,
+    now_secs, resolve_endpoint,
 };
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -291,7 +291,7 @@ impl SocketState {
         let entry = self.handshake_entry(socket, peer).await?;
         entry.channel.input_payload(payload).await?;
 
-        let mut buffer = vec![0u8; PACKET_LENGTH];
+        let mut buffer = vec![0u8; MAX_INNER_MESSAGE];
         loop {
             let size = match entry.channel.receive(&mut buffer).await {
                 Ok(size) => size,
@@ -617,7 +617,7 @@ impl SocketState {
     }
 
     async fn drain_data(&self, session: &DataSession) {
-        let mut buffer = vec![0u8; PACKET_LENGTH];
+        let mut buffer = vec![0u8; MAX_INNER_MESSAGE];
         loop {
             let size = match session.channel.receive(&mut buffer).await {
                 Ok(size) => size,

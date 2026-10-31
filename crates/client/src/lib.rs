@@ -20,8 +20,8 @@ use kcptube_protocol::packet::{
     unpack_inner,
 };
 use kcptube_transport::{
-    KcpChannel, PacketCodec, TcpListenerSession, TcpSession, TransportError, UdpEndpoint, now_ms,
-    now_secs, resolve_endpoint,
+    KcpChannel, MAX_INNER_MESSAGE, PacketCodec, TcpListenerSession, TcpSession, TransportError,
+    UdpEndpoint, now_ms, now_secs, resolve_endpoint,
 };
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -361,7 +361,7 @@ async fn udp_relay_loop(
 ) -> Result<(), ClientError> {
     let mut ticker = interval(Duration::from_millis(5));
     let mut datagram = vec![0u8; PACKET_LENGTH + 256];
-    let mut inner_buffer = vec![0u8; PACKET_LENGTH];
+    let mut inner_buffer = vec![0u8; MAX_INNER_MESSAGE];
 
     let keep_alive = i64::from(state.settings.keep_alive);
     let mut next_keep_alive = now_secs() + keep_alive;
@@ -610,7 +610,7 @@ async fn wait_handshake(
     let deadline = Instant::now() + Duration::from_secs(HANDSHAKE_TIMEOUT as u64);
     let mut ticker = interval(Duration::from_millis(5));
     let mut datagram = vec![0u8; PACKET_LENGTH + 256];
-    let mut inner_buffer = vec![0u8; PACKET_LENGTH];
+    let mut inner_buffer = vec![0u8; MAX_INNER_MESSAGE];
 
     loop {
         if Instant::now() >= deadline {
@@ -664,7 +664,7 @@ async fn relay_tcp(
     let mut ticker = interval(Duration::from_millis(5));
     let mut tcp_buffer = vec![0u8; 2048];
     let mut datagram = vec![0u8; PACKET_LENGTH + 256];
-    let mut inner_buffer = vec![0u8; PACKET_LENGTH];
+    let mut inner_buffer = vec![0u8; MAX_INNER_MESSAGE];
 
     let keep_alive = i64::from(state.settings.keep_alive);
     let mut next_keep_alive = now_secs() + keep_alive;
