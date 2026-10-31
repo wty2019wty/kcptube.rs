@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! 网络传输层。
 //!
 //! 对应 C++ 版 `networks/` 目录：`connections.cpp`（asio 封装）、

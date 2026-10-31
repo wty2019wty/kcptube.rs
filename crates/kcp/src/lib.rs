@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! KCP 传输层。
 //!
 //! ## 为什么不用现成 crate

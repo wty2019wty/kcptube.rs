@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! 数据层与包层结构。
 //!
 //! 字节序约定（与 C++ 版一致，容易踩坑，务必注意）：

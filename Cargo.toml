@@ -6,7 +6,7 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-license = "BSD-3-Clause"
+license = "GPL-3.0-only"
 repository = "https://github.com/wty2019wty/kcptube.rs"
 authors = ["kcptube.rs contributors"]
 

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! 加密帧的封装/解封装。
 //!
 //! 与 C++ `data_operations.cpp` 中 `encrypt_data` / `decrypt_data` 对应：

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! 密钥与 IV 派生（对应 C++ `shares/aead.hpp`）。
 //!
 //! 规则（务必与 C++ 保持一致）：

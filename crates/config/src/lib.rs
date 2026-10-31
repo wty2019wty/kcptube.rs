@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! 配置文件解析。
 //!
 //! 目标：与 C++ 版（`legacy-cpp/src/shares/configurations.cpp`，约 1000 行）兼容，

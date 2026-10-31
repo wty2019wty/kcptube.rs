@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! 客户端模式（对应 C++ `modes/client.cpp`，约 1900 行）。
 //!
 //! 负责：

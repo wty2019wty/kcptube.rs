@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! kcptube（Rust 实现）入口。
 //!
 //! 命令行行为与 C++ 版保持一致：

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! 取值与 C++ 版一致（`shares/share_defines.hpp` 的 `constant_values`
 //! 与 `networks/connections.hpp` 的 `gbv_*`）。
 

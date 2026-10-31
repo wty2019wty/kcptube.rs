@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! kcptube 线格式定义。
 //!
 //! 本 crate 只做「纯逻辑」的编解码，不涉及任何 IO，便于单元测试。

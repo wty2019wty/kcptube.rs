@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! 中继模式（对应 C++ `modes/relay.cpp`，约 1800 行）。
 //!
 //! relay 由「入口（ingress）」与「出口（egress）」两段配置组成，

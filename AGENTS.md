@@ -40,6 +40,7 @@ cargo test --workspace
 - 新依赖加在根 `Cargo.toml` 的 `[workspace.dependencies]`，crate 内写 `xxx.workspace = true`（现有项目的统一做法）。
 - 改动加密/FEC 后必须保持 `crates/crypto/src/cipher.rs::vectors_match_botan` 通过；新增向量要注明由 C++ 版 Botan 生成。
 - 非测试代码禁止 `unwrap()`/`expect()`；`unsafe` 默认禁止；错误用 `thiserror`；注释与文档用中文。
+- 许可证：本项目以 `GPL-3.0-only` 分发，每个 `.rs` 文件首行固定为 `// SPDX-License-Identifier: GPL-3.0-only`；`legacy-cpp/` 保留上游 BSD 3-Clause 声明，**不要**改写其文件头或删除 `legacy-cpp/LICENSE`。新增第三方代码须确认与 GPLv3 兼容并登记到 `THIRD-PARTY.md`。
 - 提交信息：`<类型>: <中文描述>`，类型用 `feat / fix / refactor / test / docs / ci / chore`。
 - 里程碑有进展时同步更新 `docs/progress.md`。
 

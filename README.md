@@ -64,4 +64,8 @@ cargo run -p kcptube -- --help
 
 ## 许可
 
-BSD 3-Clause。原 C++ 实现版权归 cnbatch 所有，详见 [`LICENSE`](LICENSE)。
+本项目（含 `crates/` 下的全部 Rust 代码）以 **GNU General Public License v3.0** 分发，全文见 [`LICENSE`](LICENSE)。
+
+`legacy-cpp/` 是上游 C++ 实现，由 cnbatch 以 **BSD 3-Clause** 授权，其原始许可证与版权声明保留在 [`legacy-cpp/LICENSE`](legacy-cpp/LICENSE)；`legacy-cpp/src/3rd_party/` 中的 ikcp 为 MIT 授权。BSD 3-Clause 与 MIT 均可并入 GPLv3 作品，本项目整体因此以 GPLv3 分发，但上述原始声明不得移除。第三方来源与许可证的完整清单见 [`THIRD-PARTY.md`](THIRD-PARTY.md)。
+
+> 早期以 BSD 3-Clause 发布的版本不受影响，仍可依其原许可证使用；自本许可证变更后的版本起适用 GPLv3。

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! kcptube 加密层。
 //!
 //! 目标：与 C++ 版（Botan3）**逐字节**兼容。已用同一组向量验证过的模式：

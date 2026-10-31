@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! 前向纠错（FEC）。
 //!
 //! C++ 版使用 Botan3 内置的 `Botan::ZFEC`（即 zfec 的移植）：
