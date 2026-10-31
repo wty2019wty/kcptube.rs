@@ -52,6 +52,8 @@ pub enum KcpError {
     InvalidInput,
     #[error("MTU 非法")]
     InvalidMtu,
+    #[error("KCP 输出回调失败")]
+    OutputFailed,
 }
 
 /// KCP 参数（对应 C++ `user_settings.kcp_*` 与命名预设 regular1-5 / fast1-6）。

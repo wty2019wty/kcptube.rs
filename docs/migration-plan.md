@@ -281,7 +281,7 @@ KCP 本体（ikcp）是标准大端格式。
 
 ---
 
-### M2 KCP 与传输层（进行中，约 70%）
+### M2 KCP 与传输层（已完成 ✅）
 
 目标：KCP 能在 Rust 侧正确收发并定时驱动。
 
@@ -291,15 +291,17 @@ KCP 本体（ikcp）是标准大端格式。
 - [x] **kcp**：`SetBandwidth`、`ResetWindowValues`、`WaitQueue*` 等改版特性
 - [x] **kcp**：与 C++ 版做「同一输入序列 → 同一输出包序列」测试
 - [x] **transport**：`KcpUpdater`（最小堆，语义对齐 C++ 线程版）
-- [ ] **transport**：TCP 会话封装（读、写、背压、断开回调）
-- [ ] **transport**：UDP 监听/发送封装（`socket2` 处理 `SO_REUSEADDR`、`SO_SETFIB`、双栈）
-- [ ] **transport**：数据包发送/接收流水线（加密 → 包层 → KCP → UDP）
+- [x] **transport**：TCP 会话封装（读、写、背压、`into_split`）
+- [x] **transport**：UDP 监听/发送封装（`socket2`、`SO_REUSEADDR`、双栈；`SO_SETFIB` 留到 M5）
+- [x] **transport**：数据包发送/接收流水线（加密 → 包层 → KCP → UDP，见 `KcpChannel`）
 - [x] 测试：回环（loopback）下 10% 丢包仍能完整传输
 
 验收：
 
 - [x] 进程内两个 KCP 端点互通，丢包 10% 时仍能正确传输
 - [x] 定时器精度与 C++ 版一致（KCP `interval` 生效）
+
+> FEC / mux 接入流水线属于 M4；M3 先跑「关闭 FEC、单通道」的场景。
 
 ---
 
@@ -503,7 +505,7 @@ cargo run -p kcptube -- --check-config service/config_sample_client.conf
 ## 附录 B：里程碑验收清单
 
 - [x] M1：所有协议向量测试通过，配置样例可解析
-- [ ] M2：KCP 回环通过，丢包测试通过
+- [x] M2：KCP 回环通过，丢包测试通过
 - [ ] M3：Rust/C++ 双向 TCP 互通，1 小时稳定性
 - [ ] M4：UDP + mux + 端口跳跃 + STUN 全部可用
 - [ ] M5：relay/tester 可用，性能达标，双平台 CI 绿

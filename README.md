@@ -13,7 +13,7 @@
 | FEC（`crates/fec`） | 🟢 ZFEC 与 Botan share 逐字节一致，含 `fec_container` |
 | KCP（`crates/kcp`） | 🟢 ikcp 全量移植，与 C++ 输出逐字节对撞 |
 | 配置解析（`crates/config`） | 🟢 完整解析与校验，`--check-config` 可用 |
-| 传输层（`crates/transport`） | 🟡 KCP 调度器与加密包层完成；TCP/UDP 会话待实现 |
+| 传输层（`crates/transport`） | 🟢 KCP 调度、加密包层、UDP/TCP 封装与端到端 `KcpChannel` 完成 |
 | client / server / relay | 🟡 仅入口 |
 | 连通性测试（`--try`） | 🟡 未实现 |
 

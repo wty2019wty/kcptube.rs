@@ -15,8 +15,16 @@
 //! | `asio::post` 跨线程投递 | `mpsc` / `JoinSet` |
 //! | `KCPUpdater` 独立线程 + 条件变量 | 本文件的最小堆调度器 + 调用方 `select!` |
 
+pub mod channel;
+pub mod tcp;
+pub mod udp;
+
+pub use channel::KcpChannel;
+pub use tcp::{TcpListenerSession, TcpSession};
+pub use udp::{UdpBindOptions, UdpEndpoint};
+
 use kcptube_crypto::{Cipher, CryptoError, EncryptionMode};
-use kcptube_kcp::{Kcp, KcpConfig};
+use kcptube_kcp::{Kcp, KcpConfig, KcpError};
 use kcptube_protocol::constant;
 use kcptube_protocol::{PacketLayer, ProtocolError};
 use std::cmp::Ordering;
@@ -85,6 +93,8 @@ pub enum TransportError {
     Closed,
     #[error("加密层错误：{0}")]
     Crypto(#[from] CryptoError),
+    #[error("KCP 错误：{0}")]
+    Kcp(#[from] KcpError),
     #[error("协议层错误：{0}")]
     Protocol(#[from] ProtocolError),
     #[error("时间戳超出允许范围")]
