@@ -248,6 +248,20 @@ fn is_due(now: u32, at: u32) -> bool {
     (now.wrapping_sub(at) as i32) >= 0
 }
 
+/// 解析 `host:port`（支持域名），返回首个地址。
+pub async fn resolve_endpoint(host: &str, port: u16) -> std::io::Result<SocketAddr> {
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return Ok(SocketAddr::new(ip, port));
+    }
+    let mut addresses = tokio::net::lookup_host((host, port)).await?;
+    addresses.next().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::AddrNotAvailable,
+            format!("无法解析地址 {host}:{port}"),
+        )
+    })
+}
+
 /// 当前系统时间（毫秒，取低 32 位；对应 C++ `TimeNowForKCP`）
 pub fn now_ms() -> u32 {
     std::time::SystemTime::now()

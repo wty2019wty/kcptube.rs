@@ -305,24 +305,24 @@ KCP 本体（ikcp）是标准大端格式。
 
 ---
 
-### M3 最小互通：TCP 单通道（约 7~10 人日）
+### M3 最小互通：TCP 单通道（进行中，约 90%）
 
-目标：**Rust 客户端 → C++ 服务端** 的 TCP 转发跑通，这是第一个可交付里程碑。
+目标：**Rust 客户端 ↔ C++ 服务端** 的 TCP 转发跑通，这是第一个可交付里程碑。
 
 任务：
 
-- [ ] **server**：UDP 监听、`initialise` 握手、`raw_data` 转发到目标 TCP
-- [ ] **client**：本地 TCP 监听、握手、数据转发
-- [ ] **client/server**：KCP 通道建立与断开、保活
-- [ ] 加密全流程（默认 `aes-gcm`）
-- [ ] 日志：关键事件与 C++ 版对齐（便于对照排查）
-- [ ] 互通测试脚本：启动 C++ 服务端 + Rust 客户端，跑 HTTP/SSH 流量校验
+- [x] **server**：UDP 监听、`initialise` 握手、`raw_data` 转发到目标 TCP
+- [x] **client**：本地 TCP 监听、握手、数据转发
+- [x] **client/server**：KCP 通道建立与断开、保活
+- [x] 加密全流程（默认 `aes-gcm`）
+- [ ] 日志：关键事件与 C++ 版对齐（status/messages/ip）
+- [x] 互通测试：C++ 服务端 + Rust 客户端、Rust 服务端 + C++ 客户端、Rust↔Rust 自动化
 
 验收：
 
-- 双向混跑（Rust client ↔ C++ server 和 C++ client ↔ Rust server）均可传输
-- 连续 1 小时无断流
-- 断开重连正常
+- [x] 双向混跑（Rust client ↔ C++ server 和 C++ client ↔ Rust server）均可传输
+- [ ] 连续 1 小时无断流
+- [x] 断开重连正常（每次 TCP 连接独立握手）
 
 ---
 

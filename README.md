@@ -14,7 +14,7 @@
 | KCP（`crates/kcp`） | 🟢 ikcp 全量移植，与 C++ 输出逐字节对撞 |
 | 配置解析（`crates/config`） | 🟢 完整解析与校验，`--check-config` 可用 |
 | 传输层（`crates/transport`） | 🟢 KCP 调度、加密包层、UDP/TCP 封装与端到端 `KcpChannel` 完成 |
-| client / server / relay | 🟡 仅入口 |
+| client / server / relay | 🟢 client/server 支持 TCP 单通道；relay 仍为入口 |
 | 连通性测试（`--try`） | 🟡 未实现 |
 
 ## 文档

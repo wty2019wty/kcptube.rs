@@ -393,6 +393,8 @@ name = "kcptube-client"
 version = "0.1.0"
 dependencies = [
  "kcptube-config",
+ "kcptube-kcp",
+ "kcptube-protocol",
  "kcptube-transport",
  "thiserror",
  "tokio",
@@ -464,8 +466,12 @@ dependencies = [
 name = "kcptube-server"
 version = "0.1.0"
 dependencies = [
+ "kcptube-client",
  "kcptube-config",
+ "kcptube-kcp",
+ "kcptube-protocol",
  "kcptube-transport",
+ "rand",
  "thiserror",
  "tokio",
  "tracing",

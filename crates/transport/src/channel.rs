@@ -18,6 +18,7 @@ pub struct KcpChannel {
     pub codec: Arc<PacketCodec>,
     pub endpoint: Arc<KcpEndpoint>,
     pub socket: UdpEndpoint,
+    peer: Arc<std::sync::Mutex<SocketAddr>>,
 }
 
 impl KcpChannel {
@@ -29,15 +30,18 @@ impl KcpChannel {
         peer: SocketAddr,
     ) -> Result<Self, TransportError> {
         let endpoint = Arc::new(KcpEndpoint::new(config, peer));
+        let peer_cell = Arc::new(std::sync::Mutex::new(peer));
 
         {
             let codec = codec.clone();
             let socket = socket.clone();
+            let peer_cell = peer_cell.clone();
             let mut kcp = endpoint.kcp.lock().await;
             kcp.set_output(Box::new(move |payload: &[u8]| {
+                let target = peer_cell.lock().map(|guard| *guard).unwrap_or(peer);
                 let datagram = codec.seal(payload).map_err(|_| KcpError::OutputFailed)?;
                 socket
-                    .try_send_to(&datagram, peer)
+                    .try_send_to(&datagram, target)
                     .map_err(|_| KcpError::OutputFailed)?;
                 Ok(())
             }));
@@ -47,11 +51,26 @@ impl KcpChannel {
             codec,
             endpoint,
             socket,
+            peer: peer_cell,
         })
     }
 
     pub fn peer(&self) -> SocketAddr {
-        self.endpoint.peer
+        self.peer
+            .lock()
+            .map(|guard| *guard)
+            .unwrap_or(self.endpoint.peer)
+    }
+
+    /// 更新对端地址。
+    ///
+    /// C++ 客户端在握手成功后会切换到一个新的本地 UDP 端口，
+    /// 服务端必须按收到数据包的源地址更新回包目标（对应
+    /// `server.cpp` 里对 `ingress_source_endpoint` 的更新）。
+    pub fn set_peer(&self, peer: SocketAddr) {
+        if let Ok(mut guard) = self.peer.lock() {
+            *guard = peer;
+        }
     }
 
     pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
@@ -73,8 +92,13 @@ impl KcpChannel {
     /// 处理一个收到的 UDP 数据报
     pub async fn process_datagram(&self, datagram: &[u8]) -> Result<(), TransportError> {
         let (_, payload) = self.codec.open(datagram)?;
+        self.input_payload(&payload).await
+    }
+
+    /// 处理一个已经解密、拆包后的 KCP 负载
+    pub async fn input_payload(&self, payload: &[u8]) -> Result<(), TransportError> {
         let mut kcp = self.endpoint.kcp.lock().await;
-        Ok(kcp.input(&payload)?)
+        Ok(kcp.input(payload)?)
     }
 
     /// 从 socket 收一个数据报并直接交给 KCP
