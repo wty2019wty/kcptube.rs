@@ -76,9 +76,7 @@ impl Client {
         ));
 
         if settings.listen_ports.is_empty() {
-            return Err(ClientError::Startup(
-                "listen_port is not set（自定义输入映射将在 M4 实现）".to_string(),
-            ));
+            return Err(ClientError::Startup("listen_port is not set".to_string()));
         }
         if settings.destination_address_list.is_empty() {
             return Err(ClientError::Startup(

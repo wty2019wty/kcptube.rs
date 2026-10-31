@@ -248,8 +248,8 @@ KCP 本体（ikcp）是标准大端格式。
 - [x] 环境确认（Rust 1.96 / GCC 16.2 / asio / Botan3）
 - [x] C++ 参考版编译成功并可运行
 - [x] 迁移 C++ 代码至 `legacy-cpp/`
-- [x] 建立 Rust workspace（10 crate）
-- [x] 加密层与 Botan 向量对撞（3 种模式一致）
+- [x] 建立 Rust workspace（11 crate）
+- [x] 加密层与 Botan 向量对撞（当前 4 种 AEAD 全部一致）
 - [x] CI（fmt / clippy / test，ubuntu + windows）
 
 

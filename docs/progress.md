@@ -11,7 +11,7 @@
 | 指标 | 数值 |
 |---|---|
 | C++ 参考实现 | 14,308 行（`legacy-cpp/`，含 ikcp 1,109 行） |
-| Rust 代码 | 约 9,912 行（22 个 `.rs` 文件，非空行） |
+| Rust 代码 | 约 9,919 行（22 个 `.rs` 文件，非空行） |
 | crate 数 | 11（10 个 lib + 1 个 bin） |
 | 单元/集成测试 | 96 个，全部通过 |
 | 整体完成度 | **M0~M3 完成，M4 约 85%** |
@@ -40,7 +40,7 @@ M6 STUN/DDNS       ░░░░░░░░░░   0%
 | `crates/transport` | `connections.cpp`、`kcp_updater.cpp`、`mux_tunnel.cpp` | 🟢 100% | KCP 调度、加密包层、UDP/TCP 封装、`KcpChannel`、FEC 收发流水线、mux 隧道、可切换发送 socket |
 | `crates/client` | `client.cpp`（1917 行） | 🟢 95% | TCP + UDP 监听、握手（超时换端口重试）、`raw_data`/mux 转发、端口跳跃、随机目标选择、保活、状态日志；`[custom_input*]` 映射未接入 |
 | `crates/server` | `server.cpp`（1323 行） | 🟢 95% | 端口范围监听、TCP/UDP/mux 转发、端口跳跃重定向、会话回收、保活、状态日志；STUN/DDNS 移至 M6 |
-| `crates/logging` | `share_defines.cpp` 日志函数 | 🟢 100% | messages（追加）/ status（覆盖）/ ip（覆盖）三类文件、`to_speed_unit` 与 C++ 逐档一致 |
+| `crates/logging` | `share_defines.cpp` 日志函数 | 🟢 100% | messages（追加）/ status（覆盖）两类文件已接入，ip 文件接口预留（随 M6）、`to_speed_unit` 与 C++ 逐档一致 |
 | `crates/relay` | `relay.cpp`（1802 行） | 🟡 5% | 仅入口；配置已能拆出 ingress/egress |
 | `crates/kcptube` | `main.cpp` | 🟢 90% | clap 参数、usage、`--check-config` 可用；`--try` 仍为骨架 |
 | `--try` 连通性测试 | `tester.cpp`（392 行） | ❌ 0% | 未开始，计划 M5，需新建 `kcptube-tester` crate |
@@ -263,6 +263,8 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 
 ## 5. 已知问题与技术债
 
+> 编号沿用历史记录：`#10` 为已关闭的版本号横幅问题，为免混淆新增条目从 `#12` 起编号。
+
 | # | 问题 | 影响 | 计划 |
 |---|---|---|---|
 | 1 | relay 仍是骨架 | relay 模式不可用 | M5 |
@@ -277,6 +279,8 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 | 7 | `ignore_destination_*` / `[custom_input*]` 映射转发未接入；mux `pre_connect_custom_address` 发送侧待补 | `ignore_*` 与自定义映射场景不可用 | M4 剩余 |
 | 8 | STUN / DDNS 未实现（已从 M4 移入 M6） | 公网地址探测与动态 DNS 不可用 | M6 |
 | 9 | 端口跳跃时机不同：Rust 对所有数据通道按 `dport_refresh` 周期主动跳跃；C++ 跳过 TCP，且仅在链路空闲超时后探测 | 与 C++ 的跳跃频率/触发条件不一致，可能影响 QoS 观察 | 评估是否对齐 C++ 或保留现状并文档说明 |
+| 12 | 未指定 `ipv4_only` / `ipv6_only` 时 Rust 只监听 IPv4 通配 `0.0.0.0`（C++ 默认 IPv6 通配/双栈） | 默认不监听 IPv6；需要 IPv6 时必须显式 `ipv6_only=yes` | 保持现状并在文档说明 |
+| 13 | 多配置文件按顺序启动：`main.rs` 逐个 `await` 各 profile，客户端/服务端首个常驻的配置不退出时后续配置不会启动（C++ 并发运行） | 多配置文件部署实际只生效第一个 | 后续改为并发启动 |
 
 ---
 
@@ -318,6 +322,7 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 | 2026-10-31 | 版本号显示方式：`--version` 改用 crate 版本（`APP_DISPLAY_VERSION`），与协议兼容目标版本 `APP_VERSION` 区分；提取 `print_version_banner` 统一横幅输出并注明须与 C++ 逐字一致；已知问题登记 #10 |
 | 2026-10-31 | 版本号统一：启动横幅、usage 与 `--version` 全部使用根 `Cargo.toml` 的 `version`（`0.1.0`），删除 `APP_VERSION` 常量，程序只对外自报一个版本号；横幅不再与 C++ 版逐字一致，协议兼容目标仍记录在 `docs/migration-plan.md`；已知问题 #10 关闭 |
 | 2026-10-31 | docs: 新增使用文档全套（`docs/README.md` 索引、`parameters.md` 参数手册、`client-server.md`、`relay-mode.md`、`fec.md`、`mtu.md`、`custom-ip-mappings.md`、`specific-examples.md`），参照 `legacy-cpp/docs/` 篇目结构、基于 Rust 代码实际行为编写；校准 KCP 预设值（fast1/fast2 `kcp_interval=0`）、`kcp_mtu` 默认值（1418/1405）、带宽后缀与 `/8` 换算怪癖、`{}` 忽略语法、relay 段继承规则等与 C++ 对齐的细节；对 `--try`、relay 运行期、`[custom_input*]` 转发、STUN/DDNS、`fib_*` 等未实现项逐一标注；根 `README.md` 文档导航同步更新 |
+| 2026-10-31 | docs: 按代码行为校正文档与注释：`mtu` 优先于 `kcp_mtu`、`listen_on` 仅接受 IP、多配置文件为顺序启动（登记已知问题 #13）、默认仅监听 IPv4（#12）、`ip_address.log` 尚未接入、端口范围含两端；修正 `cipher.rs` 校验字节序注释与过时提示文案；非空行数更新为 9,919 |
 
 ---
 

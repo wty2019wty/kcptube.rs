@@ -170,7 +170,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if started == 0 {
-        eprintln!("没有成功启动任何模式（当前为骨架版本，功能尚未实现）");
+        eprintln!("没有成功启动任何模式");
     }
 
     Ok(())

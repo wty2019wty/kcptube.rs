@@ -6,7 +6,7 @@
 //!
 //! ```text
 //! AEAD 模式:    密文(含 AEAD tag) || iv_raw(2 字节 LE)
-//! none/xor 模式: 数据 || crc_checksum(2 字节 LE)   [xor 另外做一次前向差分]
+//! none/xor 模式: 数据 || crc_checksum(2 字节 BE)   [xor 另外做一次前向差分]
 //! ```
 //!
 //! 每次加密都会重新随机生成 `iv_raw`，并与 C++ 的 `change_iv()` 使用相同展开规则。
