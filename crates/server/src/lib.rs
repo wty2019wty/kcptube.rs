@@ -18,11 +18,12 @@ use kcptube_protocol::constant::{
 use kcptube_protocol::packet::{
     Feature, ProtocolType, SettingsWrapper, create_data_packet, create_keep_alive_packet,
     create_keep_alive_response_packet, inform_disconnect_packet, inform_error_packet,
-    response_initialise_packet, unpack_inner,
+    inform_mux_cancel_packet, response_initialise_packet, unpack_inner,
 };
 use kcptube_transport::{
-    IncomingFrame, KcpChannel, MAX_INNER_MESSAGE, PacketCodec, TcpSession, TransportError,
-    UdpEndpoint, now_ms, now_secs, parse_frame, resolve_endpoint,
+    IncomingFrame, KcpChannel, MAX_INNER_MESSAGE, MuxEvent, MuxRecord, MuxSink, MuxTcpSink,
+    MuxTunnel, PacketCodec, TcpSession, TransportError, UdpEndpoint, now_ms, now_secs, parse_frame,
+    resolve_endpoint,
 };
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -31,7 +32,7 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::OwnedWriteHalf;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinSet;
 use tokio::time::{Duration, interval};
 
@@ -143,12 +144,16 @@ struct HandshakeEntry {
     created_at: i64,
 }
 
-/// 数据会话的落地端：TCP 写半边或 UDP 目标。
+/// 数据会话的落地端：TCP 写半边、UDP 目标或 mux 隧道。
 enum SessionKind {
     Tcp(Arc<Mutex<OwnedWriteHalf>>),
     Udp {
         socket: UdpEndpoint,
         target: SocketAddr,
+    },
+    /// mux 会话：一条通道上复用多条本地连接
+    Mux {
+        tunnel: Arc<MuxTunnel>,
     },
 }
 
@@ -207,6 +212,7 @@ impl DataSession {
 }
 
 /// 解析后的目标地址（用于日志与连接）
+#[derive(Clone)]
 struct Destination {
     host: String,
     port: u16,
@@ -269,7 +275,7 @@ impl SocketState {
     }
 
     async fn handle_datagram(
-        &self,
+        self: &Arc<Self>,
         socket: &UdpEndpoint,
         peer: SocketAddr,
         datagram: &[u8],
@@ -290,7 +296,7 @@ impl SocketState {
     }
 
     async fn handle_handshake(
-        &self,
+        self: &Arc<Self>,
         socket: &UdpEndpoint,
         peer: SocketAddr,
         frame: IncomingFrame<'_>,
@@ -362,7 +368,7 @@ impl SocketState {
 
     /// 根据握手包里的协议类型建立 TCP 或 UDP 转发会话。
     async fn establish_session(
-        &self,
+        self: &Arc<Self>,
         socket: &UdpEndpoint,
         peer: SocketAddr,
         entry: &HandshakeEntry,
@@ -397,15 +403,17 @@ impl SocketState {
         if protocol == ProtocolType::Udp {
             self.establish_udp(socket, peer, entry, protocol, &target)
                 .await
+        } else if protocol == ProtocolType::Mux {
+            self.establish_mux(socket, peer, entry, protocol, &target)
+                .await
         } else {
-            // `ProtocolType::Mux` 尚未实现，暂按 TCP 处理
             self.establish_tcp(socket, peer, entry, protocol, &target)
                 .await
         }
     }
 
     async fn establish_tcp(
-        &self,
+        self: &Arc<Self>,
         socket: &UdpEndpoint,
         peer: SocketAddr,
         entry: &HandshakeEntry,
@@ -448,7 +456,7 @@ impl SocketState {
     }
 
     async fn establish_udp(
-        &self,
+        self: &Arc<Self>,
         socket: &UdpEndpoint,
         peer: SocketAddr,
         entry: &HandshakeEntry,
@@ -489,6 +497,47 @@ impl SocketState {
         self.sessions.lock().await.insert(conv, session.clone());
 
         tokio::spawn(udp_relay_loop(udp, session.clone(), self.counters.clone()));
+
+        self.send_initialise_response(entry, protocol, conv).await
+    }
+
+    /// 建立 mux 会话：一条 KCP 通道上复用多条本地连接。
+    async fn establish_mux(
+        self: &Arc<Self>,
+        socket: &UdpEndpoint,
+        peer: SocketAddr,
+        entry: &HandshakeEntry,
+        protocol: ProtocolType,
+        target: &Destination,
+    ) -> Result<(), ServerError> {
+        tracing::info!("KCP 握手成功：{peer} -> mux");
+        let (conv, channel) = self.create_data_channel(socket, peer).await?;
+        let (tunnel, mut commands, events) = MuxTunnel::new(channel.clone(), conv);
+
+        let session = self.build_session(
+            channel,
+            SessionKind::Mux {
+                tunnel: tunnel.clone(),
+            },
+            protocol,
+        );
+        self.sessions.lock().await.insert(conv, session);
+
+        let keep_alive = self.settings.keep_alive;
+        let udp_timeout = self.settings.udp_timeout;
+        let runner = tunnel.clone();
+        tokio::spawn(async move {
+            if let Err(error) = runner.run(&mut commands, keep_alive, udp_timeout).await {
+                tracing::warn!("mux 通道 conv={conv} 结束：{error}");
+            }
+            runner.clear_records();
+        });
+
+        let state = self.clone();
+        let target = target.clone();
+        tokio::spawn(async move {
+            mux_server_event_loop(state, tunnel, target, events).await;
+        });
 
         self.send_initialise_response(entry, protocol, conv).await
     }
@@ -626,6 +675,10 @@ impl SocketState {
     }
 
     async fn drain_data(&self, session: &DataSession) {
+        // mux 会话的 KCP 收发由 `MuxTunnel::run` 独占，这里不消费它的消息
+        if matches!(session.kind, SessionKind::Mux { .. }) {
+            return;
+        }
         let mut buffer = vec![0u8; MAX_INNER_MESSAGE];
         loop {
             let size = match session.channel.receive(&mut buffer).await {
@@ -695,6 +748,10 @@ impl SocketState {
         let sessions: Vec<Arc<DataSession>> =
             self.sessions.lock().await.values().cloned().collect();
         for session in sessions {
+            // mux 会话的 KCP 由 `MuxTunnel::run` 自己驱动
+            if matches!(session.kind, SessionKind::Mux { .. }) {
+                continue;
+            }
             if session.channel.update(now).await.is_err() {
                 continue;
             }
@@ -748,6 +805,12 @@ impl SocketState {
             // 对应 C++ `clean_by_force = kcp_last_activity_gap > gbv_time_gap_seconds`
             let idle = (now - session.channel.last_input_time().await).abs();
             if idle > TIME_GAP_SECONDS {
+                if let SessionKind::Mux { tunnel, .. } = &session.kind {
+                    tunnel.shutdown();
+                    session.begin_close(now - i64::from(self.settings.udp_timeout));
+                    self.log_message(&format!("mux 会话空闲 {idle} 秒，已关闭"));
+                    continue;
+                }
                 let packet = inform_error_packet(protocol, "TCP Session Closed");
                 let _ = session.channel.send(&packet).await;
                 let _ = session.channel.update(now_ms()).await;
@@ -756,7 +819,10 @@ impl SocketState {
                 continue;
             }
 
-            if keep_alive > 0 && now >= session.next_keep_alive() {
+            if keep_alive > 0
+                && !matches!(session.kind, SessionKind::Mux { .. })
+                && now >= session.next_keep_alive()
+            {
                 let packet = create_keep_alive_packet(protocol);
                 if session.channel.send(&packet).await.is_ok() {
                     session.channel.mark_keep_alive_sent(now);
@@ -904,6 +970,230 @@ async fn udp_relay_loop(
             .send(&inform_disconnect_packet(ProtocolType::Udp))
             .await;
         session.begin_close(now_secs() + KEEPALIVE_TIMEOUT);
+    }
+}
+
+/// 服务端 mux 事件循环：把对端数据落到本地目标，并维护 `connection_id` 映射。
+async fn mux_server_event_loop(
+    state: Arc<SocketState>,
+    tunnel: Arc<MuxTunnel>,
+    default_target: Destination,
+    mut events: mpsc::Receiver<MuxEvent>,
+) {
+    while let Some(event) = events.recv().await {
+        match event {
+            MuxEvent::Transfer {
+                protocol,
+                connection_id,
+                payload,
+            } => {
+                let record = match tunnel.record(connection_id) {
+                    Some(record) if record.protocol == protocol => record,
+                    _ => {
+                        // 已取消的连接再来数据：回 `mux_cancel` 让客户端放弃
+                        if tunnel.is_expiring(connection_id) {
+                            let _ = tunnel.send_cancel(protocol, connection_id).await;
+                            continue;
+                        }
+                        match create_mux_local(
+                            &state,
+                            &tunnel,
+                            protocol,
+                            connection_id,
+                            &default_target,
+                        )
+                        .await
+                        {
+                            Ok(record) => record,
+                            Err(error) => {
+                                tracing::warn!(
+                                    "mux 连接 {connection_id}（{protocol:?}）建立失败：{error}"
+                                );
+                                let _ = tunnel.send_cancel(protocol, connection_id).await;
+                                continue;
+                            }
+                        }
+                    }
+                };
+
+                record.touch();
+                if !record.sink.deliver(&payload).await {
+                    record.close();
+                    let _ = tunnel.remove_record(connection_id);
+                    tunnel.mark_expiring(connection_id);
+                    let _ = tunnel.send_cancel(protocol, connection_id).await;
+                }
+            }
+            MuxEvent::Cancel { connection_id, .. } => {
+                if let Some(record) = tunnel.remove_record(connection_id) {
+                    record.close();
+                    tunnel.mark_expiring(connection_id);
+                }
+            }
+            MuxEvent::PreConnect { protocol, address } => {
+                let connection_id = address.connection_id;
+                if tunnel.record(connection_id).is_some() {
+                    continue;
+                }
+                if tunnel.is_expiring(connection_id) {
+                    let packet = inform_mux_cancel_packet(protocol, connection_id);
+                    let _ = tunnel.send_packet(packet).await;
+                    continue;
+                }
+                let (host, port) = (address.user_input_ip.clone(), address.user_input_port);
+                match resolve_endpoint(&host, port).await {
+                    Ok(resolved) => {
+                        let target = Destination {
+                            host: host.clone(),
+                            port,
+                            address: resolved,
+                        };
+                        match create_mux_local(&state, &tunnel, protocol, connection_id, &target)
+                            .await
+                        {
+                            Ok(_) => {}
+                            Err(error) => {
+                                tracing::warn!("mux 预连接 {host}:{port} 失败：{error}");
+                                let packet = inform_mux_cancel_packet(protocol, connection_id);
+                                let _ = tunnel.send_packet(packet).await;
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!("mux 预连接地址 {host}:{port} 解析失败：{error}");
+                        let packet = inform_mux_cancel_packet(protocol, connection_id);
+                        let _ = tunnel.send_packet(packet).await;
+                    }
+                }
+            }
+        }
+    }
+    tunnel.clear_records();
+}
+
+/// 为一条 mux 记录建立本地目标连接，并启动「目标 → 隧道」的回程读取任务。
+async fn create_mux_local(
+    state: &Arc<SocketState>,
+    tunnel: &Arc<MuxTunnel>,
+    protocol: ProtocolType,
+    connection_id: u32,
+    target: &Destination,
+) -> Result<Arc<MuxRecord>, ServerError> {
+    match protocol {
+        ProtocolType::Tcp => {
+            let session = TcpSession::connect(target.address).await?;
+            tracing::debug!(
+                "mux 连接 {connection_id} -> TCP {}:{}",
+                target.host,
+                target.port
+            );
+            let (mut reader, mut writer) = session.into_split();
+            let (sink, mut data_rx, mut writer_closed) = MuxTcpSink::new(64);
+            let record =
+                tunnel.add_record(connection_id, ProtocolType::Tcp, MuxSink::Tcp(sink.clone()));
+
+            let writer_record = record.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        data = data_rx.recv() => {
+                            let Some(data) = data else { break };
+                            if writer.write_all(&data).await.is_err() {
+                                break;
+                            }
+                        }
+                        _ = writer_closed.changed() => break,
+                    }
+                }
+                writer_record.close();
+                let _ = writer.shutdown().await;
+            });
+
+            let reader_tunnel = tunnel.clone();
+            let reader_record = record.clone();
+            let mut reader_closed = sink.subscribe();
+            let counters = state.counters.clone();
+            tokio::spawn(async move {
+                let mut buffer = vec![0u8; 8192];
+                loop {
+                    tokio::select! {
+                        result = reader.read(&mut buffer) => {
+                            match result {
+                                Ok(0) | Err(_) => break,
+                                Ok(size) => {
+                                    reader_record.touch();
+                                    counters.add_egress_inner(size);
+                                    if !reader_tunnel
+                                        .send(ProtocolType::Tcp, connection_id, &buffer[..size])
+                                        .await
+                                    {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        _ = reader_closed.changed() => break,
+                    }
+                }
+                reader_record.close();
+                if reader_tunnel.remove_record(connection_id).is_some() {
+                    let _ = reader_tunnel
+                        .send_cancel(ProtocolType::Tcp, connection_id)
+                        .await;
+                }
+            });
+
+            Ok(record)
+        }
+        ProtocolType::Udp => {
+            let bind: SocketAddr = if target.address.is_ipv4() {
+                SocketAddr::from(([0, 0, 0, 0], 0))
+            } else {
+                SocketAddr::from(([0u16; 8], 0))
+            };
+            let socket = Arc::new(UdpEndpoint::bind(bind).await?);
+            let record = tunnel.add_record(
+                connection_id,
+                ProtocolType::Udp,
+                MuxSink::Udp {
+                    socket: socket.clone(),
+                    peer: target.address,
+                },
+            );
+
+            let reader_tunnel = tunnel.clone();
+            let reader_record = record.clone();
+            let counters = state.counters.clone();
+            tokio::spawn(async move {
+                let mut buffer = vec![0u8; 65536];
+                loop {
+                    let (size, _) = match socket.recv_from(&mut buffer).await {
+                        Ok(received) => received,
+                        Err(error) if is_connection_reset(&error) => continue,
+                        Err(_) => break,
+                    };
+                    reader_record.touch();
+                    counters.add_egress_inner(size);
+                    if !reader_tunnel
+                        .send(ProtocolType::Udp, connection_id, &buffer[..size])
+                        .await
+                    {
+                        break;
+                    }
+                }
+                reader_record.close();
+                if reader_tunnel.remove_record(connection_id).is_some() {
+                    let _ = reader_tunnel
+                        .send_cancel(ProtocolType::Udp, connection_id)
+                        .await;
+                }
+            });
+
+            Ok(record)
+        }
+        _ => Err(ServerError::Startup(format!(
+            "mux 不支持的协议类型：{protocol:?}"
+        ))),
     }
 }
 

@@ -20,13 +20,14 @@ use kcptube_protocol::packet::{
     unpack_inner,
 };
 use kcptube_transport::{
-    KcpChannel, MAX_INNER_MESSAGE, PacketCodec, TcpListenerSession, TcpSession, TransportError,
-    UdpEndpoint, now_ms, now_secs, resolve_endpoint,
+    KcpChannel, MAX_INNER_MESSAGE, MuxEvent, MuxRecord, MuxSink, MuxTcpSink, MuxTunnel,
+    PacketCodec, TcpListenerSession, TcpSession, TransportError, UdpEndpoint, now_ms, now_secs,
+    resolve_endpoint,
 };
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{Mutex, mpsc};
@@ -103,9 +104,25 @@ impl Client {
             counters: Arc::new(StatusCounters::default()),
             channels: Mutex::new(HashMap::new()),
             udp_relays: Mutex::new(HashMap::new()),
+            mux: Mutex::new(Vec::new()),
+            mux_cursor: AtomicUsize::new(0),
             next_channel_id: AtomicU64::new(1),
             next_status_at: AtomicI64::new(now_secs() + LOGGING_GAP_SECONDS as i64),
         });
+
+        let mux_mode = settings.mux_tunnels > 0;
+
+        // mux 模式：预先建立 `mux_tunnels` 条共享通道（对应 C++ `establish_mux_channels`）
+        if mux_mode {
+            for _ in 0..settings.mux_tunnels {
+                let (conv, channel) =
+                    establish_channel(&state, &server_host, server_port, ProtocolType::Mux).await?;
+                let tunnel =
+                    state.spawn_mux_tunnel(conv, channel, server_host.clone(), server_port);
+                state.mux.lock().await.push(tunnel);
+                tracing::info!("mux 通道 conv={conv} 已建立");
+            }
+        }
 
         let mut tasks = JoinSet::new();
 
@@ -145,9 +162,13 @@ impl Client {
 
                 let tcp_state = state.clone();
                 let host = server_host.clone();
-                tasks.spawn(
-                    async move { accept_loop(listener, tcp_state, host, server_port).await },
-                );
+                if mux_mode {
+                    tasks.spawn(async move { mux_accept_loop(listener, tcp_state).await });
+                } else {
+                    tasks.spawn(async move {
+                        accept_loop(listener, tcp_state, host, server_port).await
+                    });
+                }
 
                 // 同一端口同时监听 UDP（对应 C++ 的 `udp_access_points`）
                 let udp_listener = match UdpEndpoint::bind(addr).await {
@@ -167,9 +188,13 @@ impl Client {
 
                 let udp_state = state.clone();
                 let host = server_host.clone();
-                tasks.spawn(async move {
-                    udp_listen_loop(udp_listener, udp_state, host, server_port).await
-                });
+                if mux_mode {
+                    tasks.spawn(async move { mux_udp_listen_loop(udp_listener, udp_state).await });
+                } else {
+                    tasks.spawn(async move {
+                        udp_listen_loop(udp_listener, udp_state, host, server_port).await
+                    });
+                }
             }
         }
 
@@ -200,6 +225,10 @@ struct ClientState {
     channels: Mutex<HashMap<u64, (u32, Arc<KcpChannel>)>>,
     /// 本地 UDP 源地址 → 该地址对应中继的入队通道
     udp_relays: Mutex<HashMap<SocketAddr, mpsc::Sender<Vec<u8>>>>,
+    /// mux 模式下的共享隧道池（`mux_tunnels` 条）
+    mux: Mutex<Vec<Arc<MuxTunnel>>>,
+    /// mux 通道轮询游标
+    mux_cursor: AtomicUsize,
     next_channel_id: AtomicU64,
     next_status_at: AtomicI64,
 }
@@ -220,6 +249,74 @@ impl ClientState {
         let line = format!("{}{message}\n", time_string_with_brackets());
         tracing::warn!("{}", message);
         let _ = print_message_to_file(&self.settings.log_messages, &line);
+    }
+
+    /// 建立一条 mux 隧道并启动收发任务。
+    fn spawn_mux_tunnel(
+        self: &Arc<Self>,
+        conv: u32,
+        channel: Arc<KcpChannel>,
+        server_host: String,
+        server_port: u16,
+    ) -> Arc<MuxTunnel> {
+        let (tunnel, mut commands, events) = MuxTunnel::new(channel, conv);
+        let keep_alive = self.settings.keep_alive;
+        let udp_timeout = self.settings.udp_timeout;
+
+        let state = self.clone();
+        let runner = tunnel.clone();
+        tokio::spawn(async move {
+            let id = state.register_channel(conv, runner.channel().clone()).await;
+            if let Err(error) = runner.run(&mut commands, keep_alive, udp_timeout).await {
+                tracing::warn!("mux 通道 conv={conv} 结束：{error}");
+            }
+            runner.clear_records();
+            state.unregister_channel(id).await;
+            state
+                .mux
+                .lock()
+                .await
+                .retain(|item| !Arc::ptr_eq(item, &runner));
+
+            // 通道断开后补一条，保证本地连接始终有可用隧道
+            // （对应 C++ `process_disconnect` 里的 `establish_mux_channels(1)`）
+            if let Ok((new_conv, new_channel)) =
+                establish_channel(&state, &server_host, server_port, ProtocolType::Mux).await
+            {
+                let rebuilt =
+                    state.spawn_mux_tunnel(new_conv, new_channel, server_host.clone(), server_port);
+                state.mux.lock().await.push(rebuilt);
+                tracing::info!("mux 通道 conv={new_conv} 重建完成");
+            }
+        });
+
+        let events_tunnel = tunnel.clone();
+        tokio::spawn(async move {
+            mux_event_loop(events_tunnel, events).await;
+        });
+
+        tunnel
+    }
+
+    /// 轮询选取一条 mux 隧道（对应 C++ `pick_one_from_kcp_channels`）。
+    async fn pick_mux_tunnel(&self) -> Option<Arc<MuxTunnel>> {
+        let tunnels = self.mux.lock().await;
+        if tunnels.is_empty() {
+            return None;
+        }
+        let index = self.mux_cursor.fetch_add(1, Ordering::Relaxed) % tunnels.len();
+        tunnels.get(index).cloned()
+    }
+
+    /// 按本地 UDP 源地址查找已有的 mux 记录。
+    async fn find_udp_record(&self, peer: SocketAddr) -> Option<Arc<MuxRecord>> {
+        let tunnels = self.mux.lock().await;
+        for tunnel in tunnels.iter() {
+            if let Some(record) = tunnel.find_udp_record(peer) {
+                return Some(record);
+            }
+        }
+        None
     }
 
     async fn maybe_log_status(&self) {
@@ -522,6 +619,173 @@ async fn handle_connection(
     let result = relay_tcp(&state, tcp, channel).await;
     state.unregister_channel(id).await;
     result
+}
+
+/// mux 模式下的 TCP 接入：复用已建立的通道，按 `connection_id` 分流。
+async fn mux_accept_loop(
+    listener: TcpListenerSession,
+    state: Arc<ClientState>,
+) -> Result<(), ClientError> {
+    loop {
+        match listener.accept().await {
+            Ok((session, peer)) => {
+                let Some(tunnel) = state.pick_mux_tunnel().await else {
+                    tracing::warn!("没有可用的 mux 通道，拒绝本地连接 {peer}");
+                    continue;
+                };
+                tokio::spawn(async move {
+                    mux_handle_tcp(tunnel, session).await;
+                });
+            }
+            Err(error) => {
+                tracing::warn!("TCP accept 失败：{error}");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+    }
+}
+
+/// 分配一个未占用的 `connection_id`（对应 C++ `generate_random_number<uint32_t>`）。
+fn allocate_connection_id(tunnel: &MuxTunnel) -> u32 {
+    loop {
+        let id = rand::random::<u32>();
+        if tunnel.record(id).is_none() {
+            return id;
+        }
+    }
+}
+
+/// 一条本地 TCP 连接在 mux 通道上的转发生命周期。
+async fn mux_handle_tcp(tunnel: Arc<MuxTunnel>, tcp: TcpSession) {
+    let connection_id = allocate_connection_id(&tunnel);
+    let (mut reader, mut writer) = tcp.into_split();
+
+    let (sink, mut data_rx, mut writer_closed) = MuxTcpSink::new(64);
+    let record = tunnel.add_record(connection_id, ProtocolType::Tcp, MuxSink::Tcp(sink.clone()));
+
+    let writer_task = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                data = data_rx.recv() => {
+                    let Some(data) = data else { break };
+                    if writer.write_all(&data).await.is_err() {
+                        break;
+                    }
+                }
+                _ = writer_closed.changed() => break,
+            }
+        }
+        let _ = writer.shutdown().await;
+    });
+
+    let mut reader_closed = sink.subscribe();
+    let mut buffer = vec![0u8; 8192];
+    loop {
+        tokio::select! {
+            result = reader.read(&mut buffer) => {
+                match result {
+                    Ok(0) | Err(_) => break,
+                    Ok(size) => {
+                        record.touch();
+                        let sent = tunnel
+                            .send(ProtocolType::Tcp, connection_id, &buffer[..size])
+                            .await;
+                        if !sent {
+                            break;
+                        }
+                    }
+                }
+            }
+            _ = reader_closed.changed() => break,
+        }
+    }
+
+    record.close();
+    // 只有本地先结束时才通知服务端；被对端取消时记录已不在表里
+    if tunnel.remove_record(connection_id).is_some() {
+        let _ = tunnel.send_cancel(ProtocolType::Tcp, connection_id).await;
+    }
+    let _ = writer_task.await;
+}
+
+/// mux 模式下的本地 UDP 监听：每个源地址对应一条 mux 记录。
+async fn mux_udp_listen_loop(
+    listener: UdpEndpoint,
+    state: Arc<ClientState>,
+) -> Result<(), ClientError> {
+    let socket = Arc::new(listener);
+    let mut buffer = vec![0u8; 65536];
+    loop {
+        let (size, peer) = match socket.recv_from(&mut buffer).await {
+            Ok((size, peer)) => (size, peer),
+            Err(error) if is_connection_reset(&error) => continue,
+            Err(error) => {
+                tracing::warn!("UDP 监听接收失败：{error}");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                continue;
+            }
+        };
+        state.counters.add_ingress_raw(size);
+
+        if let Some(record) = state.find_udp_record(peer).await {
+            record.touch();
+            if let Some(tunnel) = record.tunnel() {
+                tunnel.try_send(
+                    ProtocolType::Udp,
+                    record.connection_id,
+                    buffer[..size].to_vec(),
+                );
+            }
+            continue;
+        }
+
+        let Some(tunnel) = state.pick_mux_tunnel().await else {
+            continue;
+        };
+        let connection_id = allocate_connection_id(&tunnel);
+        let sink = MuxSink::Udp {
+            socket: socket.clone(),
+            peer,
+        };
+        let record = tunnel.add_record(connection_id, ProtocolType::Udp, sink);
+        record.touch();
+        let _ = tunnel.try_send(ProtocolType::Udp, connection_id, buffer[..size].to_vec());
+    }
+}
+
+/// 客户端 mux 事件循环：把对端数据写回本地连接。
+async fn mux_event_loop(tunnel: Arc<MuxTunnel>, mut events: mpsc::Receiver<MuxEvent>) {
+    while let Some(event) = events.recv().await {
+        match event {
+            MuxEvent::Transfer {
+                protocol,
+                connection_id,
+                payload,
+            } => {
+                let Some(record) = tunnel.record(connection_id) else {
+                    // 本地连接已不存在，通知对端取消（对应 C++ `send_cancel_packet`）
+                    let _ = tunnel.send_cancel(protocol, connection_id).await;
+                    continue;
+                };
+                if record.protocol != protocol {
+                    continue;
+                }
+                record.touch();
+                if !record.sink.deliver(&payload).await {
+                    record.close();
+                    let _ = tunnel.remove_record(connection_id);
+                    let _ = tunnel.send_cancel(protocol, connection_id).await;
+                }
+            }
+            MuxEvent::Cancel { connection_id, .. } => {
+                if let Some(record) = tunnel.remove_record(connection_id) {
+                    record.close();
+                }
+            }
+            MuxEvent::PreConnect { .. } => {}
+        }
+    }
+    tunnel.clear_records();
 }
 
 /// 建立一条数据通道（含握手与 30 秒超时换端口重试）。

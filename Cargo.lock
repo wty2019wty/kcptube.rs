@@ -510,6 +510,7 @@ dependencies = [
  "kcptube-logging",
  "kcptube-protocol",
  "kcptube-transport",
+ "rand",
  "thiserror",
  "tokio",
  "tracing",

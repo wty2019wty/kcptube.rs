@@ -73,10 +73,35 @@ async fn echo_server() -> (u16, Vec<JoinHandle<()>>) {
 
 /// 启动一套 echo + 服务端 + 客户端，返回客户端本地端口与后台任务。
 async fn start_pair(keep_alive: u16) -> (u16, Vec<JoinHandle<()>>) {
-    start_pair_with(keep_alive, None).await
+    start_pair_with_options(PairOptions {
+        keep_alive,
+        ..PairOptions::default()
+    })
+    .await
 }
 
 async fn start_pair_with(keep_alive: u16, fec: Option<(u8, u8)>) -> (u16, Vec<JoinHandle<()>>) {
+    start_pair_with_options(PairOptions {
+        keep_alive,
+        fec,
+        ..PairOptions::default()
+    })
+    .await
+}
+
+#[derive(Default)]
+struct PairOptions {
+    keep_alive: u16,
+    fec: Option<(u8, u8)>,
+    mux_tunnels: u16,
+}
+
+async fn start_pair_with_options(options: PairOptions) -> (u16, Vec<JoinHandle<()>>) {
+    let PairOptions {
+        keep_alive,
+        fec,
+        mux_tunnels,
+    } = options;
     let (echo_port, echo_tasks) = echo_server().await;
     let server_port = free_udp_port();
     let client_port = free_tcp_port();
@@ -97,6 +122,11 @@ async fn start_pair_with(keep_alive: u16, fec: Option<(u8, u8)>) -> (u16, Vec<Jo
          {fec_line}\
          keep_alive={keep_alive}\n"
     ));
+    let mux_line = if mux_tunnels > 0 {
+        format!("mux_tunnels={mux_tunnels}\n")
+    } else {
+        String::new()
+    };
     let client_settings = settings(&format!(
         "mode=client\n\
          listen_on=127.0.0.1\n\
@@ -107,6 +137,7 @@ async fn start_pair_with(keep_alive: u16, fec: Option<(u8, u8)>) -> (u16, Vec<Jo
          encryption_algorithm=AES-GCM\n\
          kcp=regular3\n\
          {fec_line}\
+         {mux_line}\
          keep_alive={keep_alive}\n"
     ));
 
@@ -224,6 +255,55 @@ async fn fec_tcp_roundtrip() {
 
     stop(tasks);
     result.expect("FEC 模式下应在 20 秒内完成往返");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mux_tcp_and_udp_roundtrip() {
+    // 两条共享隧道，本地 TCP/UDP 连接按 connection_id 复用
+    let (client_port, tasks) = start_pair_with_options(PairOptions {
+        mux_tunnels: 2,
+        ..PairOptions::default()
+    })
+    .await;
+
+    let result = tokio::time::timeout(Duration::from_secs(20), async {
+        // 两条并发 TCP 连接应各自独立，互不串包
+        let first = tokio::spawn(async move {
+            let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", client_port))
+                .await
+                .unwrap();
+            let (mut reader, mut writer) = stream.split();
+            exchange(&mut reader, &mut writer, "mux A", 4).await;
+        });
+        let second = tokio::spawn(async move {
+            let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", client_port))
+                .await
+                .unwrap();
+            let (mut reader, mut writer) = stream.split();
+            exchange(&mut reader, &mut writer, "mux B", 4).await;
+            bulk_roundtrip(client_port, 32 * 1024).await;
+        });
+        first.await.unwrap();
+        second.await.unwrap();
+
+        // UDP 源地址同样复用 mux 通道
+        let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        socket.connect(("127.0.0.1", client_port)).await.unwrap();
+        let mut buffer = vec![0u8; 2048];
+        for index in 0..3u8 {
+            let message = format!("mux udp #{index}");
+            socket.send(message.as_bytes()).await.unwrap();
+            let size = tokio::time::timeout(Duration::from_secs(5), socket.recv(&mut buffer))
+                .await
+                .expect("应在 5 秒内收到 mux UDP 回显")
+                .unwrap();
+            assert_eq!(&buffer[..size], message.as_bytes());
+        }
+    })
+    .await;
+
+    stop(tasks);
+    result.expect("mux 模式应在 20 秒内完成 TCP/UDP 往返");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

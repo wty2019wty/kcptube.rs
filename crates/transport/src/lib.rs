@@ -17,11 +17,13 @@
 
 pub mod channel;
 pub mod fec;
+pub mod mux;
 pub mod tcp;
 pub mod udp;
 
 pub use channel::KcpChannel;
 pub use fec::{FecReceiver, FecSender};
+pub use mux::{MuxCommand, MuxEvent, MuxRecord, MuxSink, MuxTcpSink, MuxTunnel};
 pub use tcp::{TcpListenerSession, TcpSession};
 pub use udp::{UdpBindOptions, UdpEndpoint};
 

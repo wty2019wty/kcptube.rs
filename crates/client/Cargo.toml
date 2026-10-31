@@ -13,6 +13,7 @@ kcptube-logging.workspace = true
 kcptube-transport.workspace = true
 kcptube-protocol.workspace = true
 kcptube-kcp.workspace = true
+rand.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

@@ -335,8 +335,8 @@ KCP 本体（ikcp）是标准大端格式。
 任务：
 
 - [x] **UDP 转发**（`udp_timeout`、按本地源地址的 UDP 映射表）
-- [ ] **mux**：`mux_tunnels`、`mux_transfer` / `mux_cancel` / `pre_connect_custom_address`
-- [ ] **mux**：缓存队列与背压（对应 `mux_tcp_cache` / `mux_udp_cache`）
+- [x] **mux**：`mux_tunnels`、`mux_transfer` / `mux_cancel` / `pre_connect_custom_address`（发送侧待 `ignore_destination_*` 接入）
+- [x] **mux**：缓存队列与背压（有界 `mpsc` 替代 `mux_tcp_cache` / `mux_udp_cache` 的 `deque` + `pause()`）
 - [ ] **端口跳跃**：`dport_refresh`、`test_connection`、socket 切换、旧 forwarder 延迟回收
 - [ ] **STUN**：服务端打洞，IPv4/IPv6
 - [ ] **DDNS**：外部脚本回调（`update_ipv4` / `update_ipv6`）、`destination_dnstxt`
