@@ -6,9 +6,6 @@
 /// 程序名
 pub const APP_NAME: &str = "kcptube";
 
-/// 版本号：Rust 版**协议兼容目标**即 C++ 版的此版本
-pub const APP_VERSION: &str = "20260329";
-
 // ---- 超时与定时 ----
 /// 连接空闲超时（秒）
 pub const TIMEOUT_SECONDS: u16 = 180;

@@ -17,18 +17,17 @@
 use clap::Parser;
 use kcptube_client::Client;
 use kcptube_config::{RunningMode, UserSettings};
-use kcptube_protocol::{APP_NAME, APP_VERSION};
+use kcptube_protocol::APP_NAME;
 use kcptube_relay::Relay;
 use kcptube_server::Server;
 use std::path::PathBuf;
 
-/// 程序自身版本号：取 `crates/kcptube/Cargo.toml` 声明的 package 版本
-/// （当前经 `version.workspace = true` 继承自根 `Cargo.toml`，两者暂时相同）。
+/// 程序版本号的唯一来源：根 `Cargo.toml` 的 `[workspace.package] version`
+/// （`crates/kcptube/Cargo.toml` 经 `version.workspace = true` 继承）。
 ///
-/// 与 `APP_VERSION`（对齐 C++ 版的协议兼容目标版本）区分开：本常量仅用于
-/// `--version`（C++ 版没有该参数）；启动横幅/用法输出仍用 `APP_VERSION`，
-/// 以保持与 `legacy-cpp/src/main.cpp` 的输出逐字一致。
-/// 两个版本号不一致属有意设计，详见 `docs/progress.md` 已知问题 #10。
+/// 启动横幅、usage 与 `--version` 全部使用它，程序只对外自报一个版本号。
+/// 注意：与 C++ 版横幅的 `20260329`（协议兼容目标版本）不再逐字一致，
+/// 需要识别兼容目标时以 `docs/migration-plan.md` 的锁定版本为准。
 const APP_DISPLAY_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Parser, Debug)]
@@ -51,10 +50,10 @@ struct Cli {
     check_config: bool,
 }
 
-/// 版本横幅：刻意使用 `APP_VERSION`（协议兼容目标版本）而非 `APP_DISPLAY_VERSION`，
-/// 以保持与 `legacy-cpp/src/main.cpp` 的启动/用法输出逐字一致。
+/// 版本横幅：与 `--version` 使用同一个版本号（`APP_DISPLAY_VERSION`），
+/// 保证启动、usage 与参数查询三处输出一致。
 fn print_version_banner() {
-    println!("{APP_NAME} version {APP_VERSION}");
+    println!("{APP_NAME} version {APP_DISPLAY_VERSION}");
 }
 
 fn print_usage() {
