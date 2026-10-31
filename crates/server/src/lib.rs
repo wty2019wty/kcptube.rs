@@ -2,24 +2,32 @@
 
 //! 服务端模式（对应 C++ `modes/server.cpp`）。
 //!
-//! M3 范围：UDP 监听、`initialise` 握手、单通道 TCP `raw_data` 转发。
-//! 端口跳跃、STUN、DDNS、FEC、mux 留到后续里程碑。
+//! M3 范围：UDP 监听、`initialise` 握手、单通道 TCP `raw_data` 转发、
+//! 空闲清理、保活与状态日志。端口跳跃、STUN、DDNS、FEC、mux 留到后续里程碑。
 
 use kcptube_config::UserSettings;
 use kcptube_kcp::{Kcp, KcpConfig, KcpError};
+use kcptube_logging::{
+    LOGGING_GAP_SECONDS, StatusCounters, print_message_to_file, print_status_to_file,
+    time_string_with_brackets, to_speed_unit,
+};
 use kcptube_protocol::ProtocolError;
-use kcptube_protocol::constant::PACKET_LENGTH;
+use kcptube_protocol::constant::{
+    KCP_CLEANUP_WAITS, KEEPALIVE_TIMEOUT, PACKET_LENGTH, TIME_GAP_SECONDS,
+};
 use kcptube_protocol::packet::{
-    Feature, ProtocolType, SettingsWrapper, create_data_packet, create_keep_alive_response_packet,
-    inform_disconnect_packet, inform_error_packet, response_initialise_packet, unpack_inner,
+    Feature, ProtocolType, SettingsWrapper, create_data_packet, create_keep_alive_packet,
+    create_keep_alive_response_packet, inform_disconnect_packet, inform_error_packet,
+    response_initialise_packet, unpack_inner,
 };
 use kcptube_transport::{
-    KcpChannel, PacketCodec, TcpSession, TransportError, UdpEndpoint, now_ms, resolve_endpoint,
+    KcpChannel, PacketCodec, TcpSession, TransportError, UdpEndpoint, now_ms, now_secs,
+    resolve_endpoint,
 };
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::OwnedWriteHalf;
@@ -84,9 +92,17 @@ impl Server {
                 .parse()
                 .map_err(|_| ServerError::Startup(format!("无效的 listen_on 地址：{address}")))?;
             let addr = SocketAddr::new(ip, port);
-            let socket = UdpEndpoint::bind(addr)
-                .await
-                .map_err(|error| ServerError::Startup(format!("无法监听 {addr}: {error}")))?;
+            let socket = match UdpEndpoint::bind(addr).await {
+                Ok(socket) => socket,
+                Err(error) => {
+                    let message = format!(
+                        "{}Listen Address incorrect - {addr}\n",
+                        time_string_with_brackets()
+                    );
+                    let _ = print_message_to_file(&settings.log_messages, &message);
+                    return Err(ServerError::Startup(format!("无法监听 {addr}: {error}")));
+                }
+            };
             tracing::info!("服务端监听 UDP {addr}");
 
             let state = Arc::new(SocketState {
@@ -94,6 +110,8 @@ impl Server {
                 codec: codec.clone(),
                 handshakes: Mutex::new(HashMap::new()),
                 sessions: Mutex::new(HashMap::new()),
+                counters: Arc::new(StatusCounters::default()),
+                next_status_at: AtomicI64::new(now_secs() + LOGGING_GAP_SECONDS as i64),
             });
             tasks.spawn(async move { state.run(socket).await });
         }
@@ -119,12 +137,78 @@ impl Server {
 struct HandshakeEntry {
     channel: Arc<KcpChannel>,
     established: AtomicBool,
+    /// 建链时刻（Unix 秒），用于回收握手通道
+    created_at: i64,
+}
+
+/// 数据会话的落地端：TCP 写半边或 UDP 目标。
+enum SessionKind {
+    Tcp(Arc<Mutex<OwnedWriteHalf>>),
+    Udp {
+        socket: UdpEndpoint,
+        target: SocketAddr,
+    },
 }
 
 struct DataSession {
     channel: Arc<KcpChannel>,
-    writer: Arc<Mutex<OwnedWriteHalf>>,
+    kind: SessionKind,
+    protocol: ProtocolType,
     closed: AtomicBool,
+    /// 允许回收的时刻（Unix 秒）；`closed` 置位后才有效
+    expire_at: AtomicI64,
+    /// 下一次发送 `keep_alive` 的时刻（Unix 秒）
+    next_keep_alive: AtomicI64,
+    /// 最近一次向目标发送 / 从目标收到数据的时刻（Unix 秒）
+    last_send_at: AtomicI64,
+    last_receive_at: AtomicI64,
+}
+
+impl DataSession {
+    fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
+    }
+
+    /// 进入关闭流程：仍保留通道一段时间用于冲刷重传（对应 C++ `expiring_kcp`）。
+    fn begin_close(&self, expire_at: i64) {
+        self.closed.store(true, Ordering::SeqCst);
+        self.expire_at.store(expire_at, Ordering::SeqCst);
+    }
+
+    fn expire_at(&self) -> i64 {
+        self.expire_at.load(Ordering::SeqCst)
+    }
+
+    fn next_keep_alive(&self) -> i64 {
+        self.next_keep_alive.load(Ordering::SeqCst)
+    }
+
+    fn set_next_keep_alive(&self, at: i64) {
+        self.next_keep_alive.store(at, Ordering::SeqCst);
+    }
+
+    fn mark_send(&self, at: i64) {
+        self.last_send_at.store(at, Ordering::SeqCst);
+    }
+
+    fn mark_receive(&self, at: i64) {
+        self.last_receive_at.store(at, Ordering::SeqCst);
+    }
+
+    fn last_send_at(&self) -> i64 {
+        self.last_send_at.load(Ordering::SeqCst)
+    }
+
+    fn last_receive_at(&self) -> i64 {
+        self.last_receive_at.load(Ordering::SeqCst)
+    }
+}
+
+/// 解析后的目标地址（用于日志与连接）
+struct Destination {
+    host: String,
+    port: u16,
+    address: SocketAddr,
 }
 
 struct SocketState {
@@ -132,12 +216,18 @@ struct SocketState {
     codec: Arc<PacketCodec>,
     handshakes: Mutex<HashMap<SocketAddr, Arc<HandshakeEntry>>>,
     sessions: Mutex<HashMap<u32, Arc<DataSession>>>,
+    counters: Arc<StatusCounters>,
+    /// 下一次输出状态摘要的时刻（Unix 秒）
+    next_status_at: AtomicI64,
 }
 
 impl SocketState {
     async fn run(self: Arc<Self>, socket: UdpEndpoint) -> Result<(), ServerError> {
         let mut buffer = vec![0u8; PACKET_LENGTH + 256];
-        let mut ticker = interval(Duration::from_millis(5));
+        // KCP 驱动：5ms 一次，与 C++ `KCPUpdater` 的调度精度一致
+        let mut kcp_ticker = interval(Duration::from_millis(5));
+        // 维护：每秒一次（对应 C++ `gbv_expring_update_interval`）
+        let mut maintenance = interval(Duration::from_secs(1));
 
         loop {
             tokio::select! {
@@ -151,13 +241,22 @@ impl SocketState {
                                 tracing::debug!("丢弃来自 {peer} 的数据报：{error}");
                             }
                         }
+                        Err(error) if is_connection_reset(&error) => {
+                            // Windows 上 UDP 收到 ICMP 端口不可达（对端已关闭）时会返回
+                            // WSAECONNRESET；会话关闭后仍在重传尾包时很常见，忽略即可。
+                            tracing::trace!("UDP 收到对端不可达提示，已忽略");
+                        }
                         Err(error) => {
                             tracing::warn!("UDP 接收失败：{error}");
                         }
                     }
                 }
-                _ = ticker.tick() => {
-                    self.tick(&socket).await;
+                _ = kcp_ticker.tick() => {
+                    self.tick_kcp().await;
+                }
+                _ = maintenance.tick() => {
+                    self.maintain().await;
+                    self.maybe_log_status().await;
                 }
             }
         }
@@ -173,6 +272,8 @@ impl SocketState {
         if payload.is_empty() {
             return Ok(());
         }
+        self.counters.add_ingress_raw(datagram.len());
+        self.counters.add_ingress_inner(payload.len());
 
         match Kcp::peek_conv(&payload) {
             Some(0) => self.handle_handshake(socket, peer, &payload).await,
@@ -204,7 +305,7 @@ impl SocketState {
                         continue;
                     }
                     let settings = SettingsWrapper::decode(body)?;
-                    self.establish_tcp(socket, peer, &entry, protocol, settings)
+                    self.establish_session(socket, peer, &entry, protocol, settings)
                         .await?;
                     entry.established.store(true, Ordering::SeqCst);
                 }
@@ -245,9 +346,54 @@ impl SocketState {
         let entry = Arc::new(HandshakeEntry {
             channel,
             established: AtomicBool::new(false),
+            created_at: now_secs(),
         });
         self.handshakes.lock().await.insert(peer, entry.clone());
         Ok(entry)
+    }
+
+    /// 根据握手包里的协议类型建立 TCP 或 UDP 转发会话。
+    async fn establish_session(
+        &self,
+        socket: &UdpEndpoint,
+        peer: SocketAddr,
+        entry: &HandshakeEntry,
+        protocol: ProtocolType,
+        wrapper: SettingsWrapper,
+    ) -> Result<(), ServerError> {
+        let (host, port) = match self.target_for(&wrapper) {
+            Ok(target) => target,
+            Err(error) => {
+                let packet = inform_error_packet(protocol, &error.to_string());
+                entry.channel.send(&packet).await?;
+                entry.channel.update(now_ms()).await?;
+                self.log_message(&format!("{peer} -> {error}"));
+                return Ok(());
+            }
+        };
+        let target = match resolve_endpoint(&host, port).await {
+            Ok(address) => Destination {
+                host: host.clone(),
+                port,
+                address,
+            },
+            Err(error) => {
+                let packet = inform_error_packet(protocol, &error.to_string());
+                entry.channel.send(&packet).await?;
+                entry.channel.update(now_ms()).await?;
+                self.log_message(&format!("{peer} -> 无法解析 {host}:{port}：{error}"));
+                return Ok(());
+            }
+        };
+
+        if protocol == ProtocolType::Udp {
+            self.establish_udp(socket, peer, entry, protocol, &target)
+                .await
+        } else {
+            // `ProtocolType::Mux` 尚未实现，暂按 TCP 处理
+            self.establish_tcp(socket, peer, entry, protocol, &target)
+                .await
+        }
     }
 
     async fn establish_tcp(
@@ -256,22 +402,95 @@ impl SocketState {
         peer: SocketAddr,
         entry: &HandshakeEntry,
         protocol: ProtocolType,
-        wrapper: SettingsWrapper,
+        target: &Destination,
     ) -> Result<(), ServerError> {
-        let (host, port) = self.target_for(&wrapper)?;
-        let target = resolve_endpoint(&host, port).await?;
-
-        let tcp = match TcpSession::connect(target).await {
+        let Destination {
+            host,
+            port,
+            address,
+        } = target;
+        let tcp = match TcpSession::connect(*address).await {
             Ok(session) => session,
             Err(error) => {
                 let packet = inform_error_packet(protocol, &error.to_string());
                 entry.channel.send(&packet).await?;
                 entry.channel.update(now_ms()).await?;
+                self.log_message(&format!("TCP {host}:{port} 连接失败：{error}"));
                 return Ok(());
             }
         };
         tracing::info!("KCP 握手成功：{peer} -> TCP {host}:{port}");
 
+        let (conv, channel) = self.create_data_channel(socket, peer).await?;
+        let (reader, writer) = tcp.into_split();
+        let session = self.build_session(
+            channel.clone(),
+            SessionKind::Tcp(Arc::new(Mutex::new(writer))),
+            protocol,
+        );
+        self.sessions.lock().await.insert(conv, session.clone());
+
+        tokio::spawn(tcp_reader_loop(
+            reader,
+            session.clone(),
+            self.counters.clone(),
+        ));
+
+        self.send_initialise_response(entry, protocol, conv).await
+    }
+
+    async fn establish_udp(
+        &self,
+        socket: &UdpEndpoint,
+        peer: SocketAddr,
+        entry: &HandshakeEntry,
+        protocol: ProtocolType,
+        target: &Destination,
+    ) -> Result<(), ServerError> {
+        let Destination {
+            host,
+            port,
+            address,
+        } = target;
+        let bind: SocketAddr = if address.is_ipv4() {
+            SocketAddr::from(([0, 0, 0, 0], 0))
+        } else {
+            SocketAddr::from(([0u16; 8], 0))
+        };
+        let udp = match UdpEndpoint::bind(bind).await {
+            Ok(endpoint) => endpoint,
+            Err(error) => {
+                let packet = inform_error_packet(protocol, &error.to_string());
+                entry.channel.send(&packet).await?;
+                entry.channel.update(now_ms()).await?;
+                self.log_message(&format!("UDP 套接字创建失败：{error}"));
+                return Ok(());
+            }
+        };
+        tracing::info!("KCP 握手成功：{peer} -> UDP {host}:{port}");
+
+        let (conv, channel) = self.create_data_channel(socket, peer).await?;
+        let session = self.build_session(
+            channel.clone(),
+            SessionKind::Udp {
+                socket: udp.clone(),
+                target: *address,
+            },
+            protocol,
+        );
+        self.sessions.lock().await.insert(conv, session.clone());
+
+        tokio::spawn(udp_relay_loop(udp, session.clone(), self.counters.clone()));
+
+        self.send_initialise_response(entry, protocol, conv).await
+    }
+
+    /// 新建数据通道，返回 `(conv, channel)`
+    async fn create_data_channel(
+        &self,
+        socket: &UdpEndpoint,
+        peer: SocketAddr,
+    ) -> Result<(u32, Arc<KcpChannel>), ServerError> {
         let conv = self.allocate_conv().await;
         let channel = Arc::new(
             KcpChannel::new(
@@ -287,17 +506,39 @@ impl SocketState {
             kcp.set_rx_minrto(10);
             kcp.update(now_ms());
         }
+        Ok((conv, channel))
+    }
 
-        let (reader, writer) = tcp.into_split();
-        let session = Arc::new(DataSession {
-            channel: channel.clone(),
-            writer: Arc::new(Mutex::new(writer)),
+    fn build_session(
+        &self,
+        channel: Arc<KcpChannel>,
+        kind: SessionKind,
+        protocol: ProtocolType,
+    ) -> Arc<DataSession> {
+        let now = now_secs();
+        let keep_alive = i64::from(self.settings.keep_alive);
+        Arc::new(DataSession {
+            channel,
+            kind,
+            protocol,
             closed: AtomicBool::new(false),
-        });
-        self.sessions.lock().await.insert(conv, session);
+            expire_at: AtomicI64::new(i64::MAX),
+            next_keep_alive: AtomicI64::new(if keep_alive > 0 {
+                now + keep_alive
+            } else {
+                i64::MAX
+            }),
+            last_send_at: AtomicI64::new(now),
+            last_receive_at: AtomicI64::new(now),
+        })
+    }
 
-        tokio::spawn(tcp_reader_loop(reader, channel));
-
+    async fn send_initialise_response(
+        &self,
+        entry: &HandshakeEntry,
+        protocol: ProtocolType,
+        conv: u32,
+    ) -> Result<(), ServerError> {
         let (port_start, port_end) = if is_continuous(&self.settings.listen_ports) {
             (
                 *self.settings.listen_ports.first().unwrap_or(&0),
@@ -382,22 +623,35 @@ impl SocketState {
                 Ok(size) => size,
                 Err(TransportError::Kcp(KcpError::WouldBlock)) => break,
                 Err(_) => {
-                    session.closed.store(true, Ordering::SeqCst);
+                    session.begin_close(now_secs() - KCP_CLEANUP_WAITS);
                     break;
                 }
             };
 
             let Ok((feature, protocol, body)) = unpack_inner(&buffer[..size]) else {
-                session.closed.store(true, Ordering::SeqCst);
+                session.begin_close(now_secs() - KCP_CLEANUP_WAITS);
                 break;
             };
             match feature {
                 Feature::RawData if protocol == ProtocolType::Tcp => {
+                    let SessionKind::Tcp(writer) = &session.kind else {
+                        continue;
+                    };
                     tracing::trace!("转发 {} 字节到本地 TCP", body.len());
-                    let mut writer = session.writer.lock().await;
+                    let mut writer = writer.lock().await;
                     if writer.write_all(body).await.is_err() {
-                        session.closed.store(true, Ordering::SeqCst);
+                        session.begin_close(now_secs() - KCP_CLEANUP_WAITS);
                         break;
+                    }
+                    session.mark_send(now_secs());
+                }
+                Feature::RawData if protocol == ProtocolType::Udp => {
+                    let SessionKind::Udp { socket, target } = &session.kind else {
+                        continue;
+                    };
+                    tracing::trace!("转发 {} 字节到本地 UDP {target}", body.len());
+                    if socket.try_send_to(body, *target).is_ok() {
+                        session.mark_send(now_secs());
                     }
                 }
                 Feature::KeepAlive => {
@@ -406,26 +660,21 @@ impl SocketState {
                         .send(&create_keep_alive_response_packet(protocol))
                         .await;
                 }
-                Feature::KeepAliveResponse => {}
+                Feature::KeepAliveResponse => {
+                    session.channel.mark_keep_alive_response(now_secs());
+                }
                 Feature::Disconnect | Feature::Failure => {
-                    session.closed.store(true, Ordering::SeqCst);
+                    // 对端已主动断开，不再回发 disconnect（对应 C++ `inform_peer = false`）
+                    session.begin_close(now_secs() - KCP_CLEANUP_WAITS);
                     break;
                 }
                 _ => {}
             }
         }
-
-        if session.closed.load(Ordering::SeqCst) {
-            let _ = session
-                .channel
-                .send(&inform_disconnect_packet(ProtocolType::Tcp))
-                .await;
-            let mut sessions = self.sessions.lock().await;
-            sessions.retain(|_, item| !std::ptr::eq(item.as_ref(), session));
-        }
     }
 
-    async fn tick(&self, _socket: &UdpEndpoint) {
+    /// 每 5ms 驱动所有 KCP 会话
+    async fn tick_kcp(&self) {
         let now = now_ms();
 
         let handshakes: Vec<Arc<HandshakeEntry>> =
@@ -437,13 +686,159 @@ impl SocketState {
         let sessions: Vec<Arc<DataSession>> =
             self.sessions.lock().await.values().cloned().collect();
         for session in sessions {
-            let _ = session.channel.update(now).await;
+            if session.channel.update(now).await.is_err() {
+                continue;
+            }
             self.drain_data(&session).await;
         }
     }
+
+    /// 每秒执行一次：回收过期握手 / 关闭空闲会话 / 发送保活
+    async fn maintain(&self) {
+        let now = now_secs();
+
+        // 1) 握手通道：创建后 `KCP_CLEANUP_WAITS` 秒回收
+        //    （C++ 在 4 秒时清空输出回调、8 秒时移出表；这里直接回收）
+        {
+            let mut handshakes = self.handshakes.lock().await;
+            handshakes.retain(|_, entry| now - entry.created_at < KCP_CLEANUP_WAITS);
+        }
+
+        // 2) 数据会话
+        let sessions: Vec<Arc<DataSession>> =
+            self.sessions.lock().await.values().cloned().collect();
+        let keep_alive = i64::from(self.settings.keep_alive);
+
+        for session in &sessions {
+            if session.is_closed() {
+                if now - session.expire_at() >= KCP_CLEANUP_WAITS {
+                    let mut map = self.sessions.lock().await;
+                    map.retain(|_, item| !std::ptr::eq(item.as_ref(), session.as_ref()));
+                    tracing::debug!("回收已关闭的 KCP 会话");
+                }
+                continue;
+            }
+
+            let protocol = session.protocol;
+
+            // UDP：两个方向都超过 `udp_timeout` 才回收（对应 C++ 的
+            // `time_gap_of_receive() > udp_timeout && time_gap_of_send() > udp_timeout`）
+            if protocol == ProtocolType::Udp {
+                let udp_timeout = i64::from(self.settings.udp_timeout);
+                let receive_gap = now - session.last_receive_at();
+                let send_gap = now - session.last_send_at();
+                if receive_gap > udp_timeout && send_gap > udp_timeout {
+                    session.begin_close(now - KCP_CLEANUP_WAITS);
+                    self.log_message(&format!(
+                        "UDP 会话空闲 {receive_gap} 秒（发送 {send_gap} 秒），已关闭"
+                    ));
+                    continue;
+                }
+            }
+
+            // 对应 C++ `clean_by_force = kcp_last_activity_gap > gbv_time_gap_seconds`
+            let idle = (now - session.channel.last_input_time().await).abs();
+            if idle > TIME_GAP_SECONDS {
+                let packet = inform_error_packet(protocol, "TCP Session Closed");
+                let _ = session.channel.send(&packet).await;
+                let _ = session.channel.update(now_ms()).await;
+                session.begin_close(now - i64::from(self.settings.udp_timeout));
+                self.log_message(&format!("KCP 会话空闲 {idle} 秒，已关闭"));
+                continue;
+            }
+
+            if keep_alive > 0 && now >= session.next_keep_alive() {
+                let packet = create_keep_alive_packet(protocol);
+                if session.channel.send(&packet).await.is_ok() {
+                    session.channel.mark_keep_alive_sent(now);
+                    let _ = session.channel.update(now_ms()).await;
+                }
+                session.set_next_keep_alive(now + keep_alive);
+            }
+        }
+    }
+
+    /// 状态摘要：每 `LOGGING_GAP_SECONDS` 秒一次
+    ///
+    /// 与 C++ 一致：只有配置了 `log_status`（即设置了 `log_path`）时才输出。
+    async fn maybe_log_status(&self) {
+        if self.settings.log_status.as_os_str().is_empty() {
+            return;
+        }
+        let now = now_secs();
+        if now < self.next_status_at.load(Ordering::SeqCst) {
+            return;
+        }
+        self.next_status_at
+            .store(now + LOGGING_GAP_SECONDS as i64, Ordering::SeqCst);
+
+        let duration = LOGGING_GAP_SECONDS;
+        let receive_raw = to_speed_unit(
+            StatusCounters::take(&self.counters.ingress_raw_traffic),
+            duration,
+        );
+        let receive_inner = to_speed_unit(
+            StatusCounters::take(&self.counters.ingress_inner_traffic),
+            duration,
+        );
+        let send_inner = to_speed_unit(
+            StatusCounters::take(&self.counters.egress_inner_traffic),
+            duration,
+        );
+
+        let sessions: Vec<(u32, Arc<DataSession>)> = self
+            .sessions
+            .lock()
+            .await
+            .iter()
+            .map(|(conv, session)| (*conv, session.clone()))
+            .collect();
+        let mut send_raw_bytes = 0u64;
+        let mut latencies = Vec::new();
+        for (conv, session) in &sessions {
+            send_raw_bytes += session.channel.take_output_bytes();
+            latencies.push((*conv, session.channel.rx_srtt().await));
+        }
+        {
+            let handshakes: Vec<Arc<HandshakeEntry>> =
+                self.handshakes.lock().await.values().cloned().collect();
+            for entry in handshakes {
+                send_raw_bytes += entry.channel.take_output_bytes();
+            }
+        }
+        let send_raw = to_speed_unit(send_raw_bytes, duration);
+        let fec_recover = StatusCounters::take(&self.counters.fec_recovery_count);
+
+        let mut output = format!(
+            "{}Summary of {}\n",
+            time_string_with_brackets(),
+            self.settings.config_filename.display()
+        );
+        output.push_str(&format!(
+            "receive (raw): {receive_raw}, receive (inner): {receive_inner}, send (inner): {send_inner}, send (raw): {send_raw}, fec recover: {fec_recover}\n"
+        ));
+        for (conv, srtt) in latencies {
+            output.push_str(&format!("KCP#{conv} average latency: {srtt} ms\n"));
+        }
+        output.push('\n');
+
+        let _ = print_status_to_file(&self.settings.log_status, &output);
+        // 对应 C++ `std::cout << output_text << std::endl;`（末尾再补一个换行）
+        println!("{output}");
+    }
+
+    fn log_message(&self, message: &str) {
+        let line = format!("{}{message}\n", time_string_with_brackets());
+        tracing::warn!("{}", message);
+        let _ = print_message_to_file(&self.settings.log_messages, &line);
+    }
 }
 
-async fn tcp_reader_loop(mut reader: tokio::net::tcp::OwnedReadHalf, channel: Arc<KcpChannel>) {
+async fn tcp_reader_loop(
+    mut reader: tokio::net::tcp::OwnedReadHalf,
+    session: Arc<DataSession>,
+    counters: Arc<StatusCounters>,
+) {
     let mut buffer = vec![0u8; 2048];
     loop {
         match reader.read(&mut buffer).await {
@@ -451,15 +846,56 @@ async fn tcp_reader_loop(mut reader: tokio::net::tcp::OwnedReadHalf, channel: Ar
             Ok(size) => {
                 tracing::trace!("TCP 读到 {size} 字节，发送 raw_data");
                 let packet = create_data_packet(ProtocolType::Tcp, &buffer[..size]);
-                if channel.send(&packet).await.is_err() {
+                counters.add_egress_inner(size);
+                if session.channel.send(&packet).await.is_err() {
                     break;
                 }
             }
         }
     }
-    let _ = channel
-        .send(&inform_disconnect_packet(ProtocolType::Tcp))
-        .await;
+
+    // 本地 TCP 已关闭：通知对端，并保留通道 `KEEPALIVE_TIMEOUT` 秒用于冲刷重传
+    // （对应 C++ `expiring_kcp.insert({..., right_now() + gbv_keepalive_timeout})`）
+    if !session.is_closed() {
+        let _ = session
+            .channel
+            .send(&inform_disconnect_packet(ProtocolType::Tcp))
+            .await;
+        session.begin_close(now_secs() + KEEPALIVE_TIMEOUT);
+    }
+}
+
+async fn udp_relay_loop(
+    socket: UdpEndpoint,
+    session: Arc<DataSession>,
+    counters: Arc<StatusCounters>,
+) {
+    let mut buffer = vec![0u8; 65536];
+    loop {
+        match socket.recv_from(&mut buffer).await {
+            Ok((size, _peer)) => {
+                if session.is_closed() {
+                    break;
+                }
+                session.mark_receive(now_secs());
+                let packet = create_data_packet(ProtocolType::Udp, &buffer[..size]);
+                counters.add_egress_inner(size);
+                if session.channel.send(&packet).await.is_err() {
+                    break;
+                }
+            }
+            Err(error) if is_connection_reset(&error) => continue,
+            Err(_) => break,
+        }
+    }
+
+    if !session.is_closed() {
+        let _ = session
+            .channel
+            .send(&inform_disconnect_packet(ProtocolType::Udp))
+            .await;
+        session.begin_close(now_secs() + KEEPALIVE_TIMEOUT);
+    }
 }
 
 fn handshake_config(mtu: i32) -> KcpConfig {
@@ -490,6 +926,14 @@ fn data_config(settings: &UserSettings, conv: u32) -> KcpConfig {
     }
 }
 
+/// Windows 上 UDP 对端不可达会以「连接重置/中止」的形式返回（WSAECONNRESET）。
+fn is_connection_reset(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+    )
+}
+
 fn is_continuous(ports: &[u16]) -> bool {
     if ports.is_empty() {
         return false;
@@ -509,5 +953,12 @@ mod tests {
         assert!(is_continuous(&[3000, 3001, 3002]));
         assert!(!is_continuous(&[3000, 3002]));
         assert!(!is_continuous(&[]));
+    }
+
+    #[test]
+    fn timeout_constants_match_cpp() {
+        assert_eq!(KEEPALIVE_TIMEOUT, 31);
+        assert_eq!(TIME_GAP_SECONDS, 255);
+        assert_eq!(KCP_CLEANUP_WAITS, 4);
     }
 }

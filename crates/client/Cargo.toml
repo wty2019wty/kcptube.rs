@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 kcptube-config.workspace = true
+kcptube-logging.workspace = true
 kcptube-transport.workspace = true
 kcptube-protocol.workspace = true
 kcptube-kcp.workspace = true

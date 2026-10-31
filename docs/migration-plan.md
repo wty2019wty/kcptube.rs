@@ -305,7 +305,7 @@ KCP 本体（ikcp）是标准大端格式。
 
 ---
 
-### M3 最小互通：TCP 单通道（进行中，约 90%）
+### M3 最小互通：TCP 单通道（已完成）
 
 目标：**Rust 客户端 ↔ C++ 服务端** 的 TCP 转发跑通，这是第一个可交付里程碑。
 
@@ -314,33 +314,35 @@ KCP 本体（ikcp）是标准大端格式。
 - [x] **server**：UDP 监听、`initialise` 握手、`raw_data` 转发到目标 TCP
 - [x] **client**：本地 TCP 监听、握手、数据转发
 - [x] **client/server**：KCP 通道建立与断开、保活
+- [x] **client/server**：会话回收（握手通道 4 秒、关闭后 31 秒冲刷、空闲 255 秒强制关闭）
+- [x] **client**：握手 30 秒超时后换新本地端口重试
 - [x] 加密全流程（默认 `aes-gcm`）
-- [ ] 日志：关键事件与 C++ 版对齐（status/messages/ip）
+- [x] 日志：`crates/logging` 对齐 messages / status（`ip_address.log` 依赖 STUN，随 M4）
 - [x] 互通测试：C++ 服务端 + Rust 客户端、Rust 服务端 + C++ 客户端、Rust↔Rust 自动化
 
 验收：
 
 - [x] 双向混跑（Rust client ↔ C++ server 和 C++ client ↔ Rust server）均可传输
-- [ ] 连续 1 小时无断流
+- [x] 连续 1 小时无断流（719/719 长连接往返、119/119 新建连接，0 失败）
 - [x] 断开重连正常（每次 TCP 连接独立握手）
 
 ---
 
-### M4 完整客户端/服务端（约 14~18 人日）
+### M4 完整客户端/服务端（约 14~18 人日，进行中）
 
 目标：把「能用」变成「和 C++ 版一样好用」。
 
 任务：
 
-- [ ] **UDP 转发**（`udp_timeout`、UDP 映射表）
+- [x] **UDP 转发**（`udp_timeout`、按本地源地址的 UDP 映射表）
 - [ ] **mux**：`mux_tunnels`、`mux_transfer` / `mux_cancel` / `pre_connect_custom_address`
 - [ ] **mux**：缓存队列与背压（对应 `mux_tcp_cache` / `mux_udp_cache`）
 - [ ] **端口跳跃**：`dport_refresh`、`test_connection`、socket 切换、旧 forwarder 延迟回收
 - [ ] **STUN**：服务端打洞，IPv4/IPv6
 - [ ] **DDNS**：外部脚本回调（`update_ipv4` / `update_ipv6`）、`destination_dnstxt`
 - [ ] **带宽限制**：`inbound_bandwidth` / `outbound_bandwidth`
-- [ ] **状态日志**：`log_path` 下的 status / messages / ip 三个文件，格式对齐
-- [ ] **自定义 IP 映射**：`->` 语法
+- [x] **状态日志**：`log_path` 下的 status / messages 两个文件（ip 待 STUN）
+- [ ] **自定义 IP 映射**：`->` 语法（配置已解析，转发侧未接入）
 - [ ] `blast`、`udp_timeout` 等剩余参数
 
 验收：
