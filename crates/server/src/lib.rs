@@ -2,8 +2,9 @@
 
 //! 服务端模式（对应 C++ `modes/server.cpp`）。
 //!
-//! M3 范围：UDP 监听、`initialise` 握手、单通道 TCP `raw_data` 转发、
-//! 空闲清理、保活与状态日志。端口跳跃、STUN、DDNS、FEC、mux 留到后续里程碑。
+//! 已实现：UDP 监听、`initialise` 握手、TCP/UDP/mux 转发、FEC、
+//! 空闲清理、保活与状态日志。
+//! 端口范围监听、端口跳跃、STUN/DDNS 与 `[custom_input]` 映射留到后续里程碑。
 
 use kcptube_config::UserSettings;
 use kcptube_kcp::{KcpConfig, KcpError};

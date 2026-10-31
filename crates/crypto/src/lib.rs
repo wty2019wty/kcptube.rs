@@ -3,10 +3,12 @@
 //! kcptube 加密层。
 //!
 //! 目标：与 C++ 版（Botan3）**逐字节**兼容。已用同一组向量验证过的模式：
-//! `aes-gcm`、`aes-ocb`、`xchacha20`。
+//! `aes-gcm`、`aes-ocb`、`chacha20`、`xchacha20`（4 种 AEAD），
+//! 以及 `xor` / `none` 的 CRC32 校验。
 //!
-//! 已知差异：项目实际使用的 `chacha20` 是 8 字节 IV，
-//! 其 Poly1305 tag 与 RustCrypto 标准实现不一致，尚未对齐。
+//! `chacha20` 使用 **8 字节 IV**，对应 Botan 的**原始版** ChaCha20-Poly1305
+//! （draft-agl），与 RFC 8439 的差别仅在于 Poly1305 的长度编码；
+//! 已由 `cipher.rs::chacha20_8byte_nonce_matches_botan` 与 Botan 逐字节比对。
 //!
 //! 帧格式（对应 C++ `data_operations.cpp`）：
 //!

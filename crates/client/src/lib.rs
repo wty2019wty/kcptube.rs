@@ -2,9 +2,9 @@
 
 //! 客户端模式（对应 C++ `modes/client.cpp`）。
 //!
-//! M3 范围：本地 TCP 监听、`initialise` 握手（超时后换新端口重试）、
-//! 单通道 `raw_data` 转发、保活与状态日志。
-//! 端口跳跃、mux、STUN、FEC 留到后续里程碑。
+//! 已实现：TCP + UDP 监听、`initialise` 握手（超时后换新端口重试）、
+//! `raw_data` 与 mux 转发、FEC、保活与状态日志。
+//! 端口跳跃、STUN/DDNS 与 `[custom_input]` 映射留到后续里程碑。
 
 use kcptube_config::UserSettings;
 use kcptube_kcp::{KcpConfig, KcpError};

@@ -11,7 +11,7 @@
 | 指标 | 数值 |
 |---|---|
 | C++ 参考实现 | 14,308 行（`legacy-cpp/`，含 ikcp 1,109 行） |
-| Rust 代码 | 约 9,268 行（22 个 `.rs` 文件） |
+| Rust 代码 | 约 9,278 行（22 个 `.rs` 文件，非空行） |
 | crate 数 | 11（10 个 lib + 1 个 bin） |
 | 单元/集成测试 | 90 个，全部通过 |
 | 整体完成度 | **M0~M3 完成，M4 约 60%** |
@@ -32,7 +32,7 @@ M5 relay/跨平台     ░░░░░░░░░░   0%
 | 模块 | C++ 对应 | 状态 | 说明 |
 |---|---|---|---|
 | `crates/protocol` | `connections.hpp` 包结构、`share_defines.hpp` 常量 | 🟢 100% | 常量、枚举、包层/数据层/mux/settings_wrapper 编解码全部完成并有测试 |
-| `crates/crypto` | `aead.hpp`、`data_operations.cpp`、`simple_hashing.hpp` | 🟢 100% | 5 种加密模式全部与 Botan 向量逐字节一致（含 `chacha20` 8B IV 的原始版 AEAD） |
+| `crates/crypto` | `aead.hpp`、`data_operations.cpp`、`simple_hashing.hpp` | 🟢 100% | 4 种 AEAD（`aes-gcm`/`aes-ocb`/`chacha20`/`xchacha20`）与 `xor`/`none` 的 CRC32 全部与 Botan 向量逐字节一致（含 `chacha20` 8B IV 的原始版 AEAD） |
 | `crates/fec` | `data_operations.cpp` + Botan ZFEC | 🟢 100% | ZFEC 矩阵/GF(2^8)/编解码已移植，share 与 Botan 3.13 逐字节一致；含 `fec_container` 打包 |
 | `crates/kcp` | `3rd_party/ikcp.cpp`、`networks/kcp.cpp` | 🟢 100% | ikcp 全量移植；发送/重传/拥塞/窗口探测与 C++ 输出逐字节对撞通过 |
 | `crates/config` | `configurations.cpp`（1010 行） | 🟢 100% | 两遍解析、预设展开、MTU、relay 分段、自定义映射、日志路径、错误文本全部对齐 |
@@ -88,6 +88,9 @@ M5 relay/跨平台     ░░░░░░░░░░   0%
 
 > `chacha20` 的旧记录 `C80B52B6…F81C62` 已作废；用 `botan cipher` 重新生成的完整向量写入
 > `crates/crypto/src/cipher.rs::chacha20_8byte_nonce_matches_botan`。
+>
+> `xor` / `none` 不含 AEAD，仅做 CRC32 校验；其 2 字节大端折叠已由
+> `crates/crypto/src/cipher.rs::checksum16_matches_botan_crc32` 对撞通过。
 
 **FEC**（Botan `ZFEC(4,6)`，输入 `00 01 … 0F`）：
 
@@ -98,7 +101,7 @@ M5 relay/跨平台     ░░░░░░░░░░   0%
 
 Rust 输出完全一致，见 `crates/fec/src/lib.rs::vectors_match_botan_zfec`。
 
-### 3.5 KCP 与传输层（M2，进行中）
+### 3.5 KCP 与传输层（M2，已完成）
 
 - [x] **kcp**：逐行移植 `ikcp.cpp`（send/input/receive/update/check/flush/put）
 - [x] **kcp**：`resendts_buf` / `fastack_buf` 索引改用 `BTreeMap<时间, BTreeSet<SN>>`
@@ -111,7 +114,7 @@ Rust 输出完全一致，见 `crates/fec/src/lib.rs::vectors_match_botan_zfec`�
 - [x] **transport**：TCP 会话/监听封装（异步读写、背压、`into_split`）
 - [x] **transport**：UDP 封装（`socket2`、`SO_REUSEADDR`、IPv6 双栈、同步 `try_send_to`）
 - [x] **transport**：`KcpChannel` 完整流水线（KCP → 加密 → UDP；UDP → 解密 → KCP），本机 UDP + AES-GCM 实测通过
-- [ ] FEC / mux 钩子（FEC 已在 3.8 完成，mux 仍在 M4）
+- [x] FEC / mux 钩子（FEC 见 3.8，mux 见 3.9）
 
 > 已知差异：C++ 的重传顺序依赖 `std::unordered_map` 迭代顺序（不可移植），
 > Rust 版固定按 SN 升序发送；报文内容与集合完全一致，仅同一次 flush 内的顺序不同。
@@ -210,7 +213,7 @@ Rust 输出完全一致，见 `crates/fec/src/lib.rs::vectors_match_botan_zfec`�
 | crate | 测试数 | 覆盖内容 |
 |---|---:|---|
 | `protocol` | 11 | 位域、字节序、包层/FEC/mux/settings 编解码、截断输入 |
-| `crypto` | 12 | 5 种模式向量、往返、篡改检测、IV 展开、CRC32 字节序 |
+| `crypto` | 12 | 4 种 AEAD 向量、`xor`/`none` 往返、篡改检测、IV 展开、CRC32 字节序 |
 | `fec` | 7 | GF 表、Botan 向量、往返、缺 share、container |
 | `kcp` | 13 | C++ 逐字节 transcript、分片、ACK、RTO、10% 丢包回环、窗口/带宽 |
 | `config` | 15 | 样例配置、端口/地址、预设、FEC/MTU、relay、自定义映射、错误文本 |
@@ -236,7 +239,7 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 
 | # | 问题 | 影响 | 计划 |
 |---|---|---|---|
-| 1 | 只监听第一个 `listen_port` | 端口范围/端口跳跃不可用 | M4 |
+| 1 | 服务端只监听第一个 `listen_port`（客户端会绑定全部，见 7.1） | 服务端端口范围/端口跳跃不可用 | M4 |
 | 2 | mux 已实现，但 `pre_connect_custom_address` 的发送侧仍需配合 `ignore_destination_*` 接入 | `ignore_listen_*` 场景无法指定目标 | M4 |
 | 3 | FEC 已接入；mux 已接入并可组合 | — | 已完成 |
 | 4 | relay 仍是骨架 | relay 模式不可用 | M5 |
@@ -245,10 +248,14 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 | 6.1 | 握手通道在 4 秒后直接回收（C++ 是 4 秒清空输出、8 秒出表） | 等价行为，仅表项存在时间略短 | 保持现状 |
 | 6.2 | 客户端状态日志的 `KCP#<conv>` 用服务端分配的 conv | 与 C++ 一致 | — |
 | 6.3 | mux 背压用有界队列替代 C++ 的 `pause()` | 行为等价（读变慢即背压） | 保持现状 |
-| 7 | `Cargo.lock` 未提交 | 依赖版本不稳定 | 建议提交 |
+| 7 | 客户端目标地址与目标端口固定取第一个（C++ 每次连接随机选择 `destination_address_list` 与 `destination_ports`） | 多地址/端口范围配置无法负载均衡或故障切换 | M4/M5 |
+| 7.1 | 客户端绑定 `listen_ports` 中的全部端口（C++ 只绑定第一个） | 配置端口范围时会额外占用大量端口 | 对齐 C++ 或文档说明 |
+| 7.2 | `blast` 默认 `true`，但传输层始终 `update + check`，未调用 `Kcp::refresh()` | 默认发送延迟可能高于 C++ | M4/M5 |
+| 7.3 | 带宽参数已写入 `settings_wrapper` 发给对端，但本地从不调用 `Kcp::set_bandwidth` | `inbound/outbound_bandwidth` 不生效 | M4 |
 | 8 | 协议无版本字段，锁定 `20260329` | 上游升级需同步 | 每次上游发版做 diff 并记录 |
-| 9 | `ipv4_only` / `ipv6_only` 的顺序语义照搬 C++ | 同时出现时行为与直觉不同 | 保持兼容 |
+| 9 | `ipv4_only` / `ipv6_only` 仅解析与校验，运行时未生效（监听 socket 固定按 `listen_on` 或 `0.0.0.0`） | IPv6-only 环境无法按配置监听 | M4 |
 | 10 | `SO_SETFIB`（FreeBSD）未实现 | FreeBSD 多路由表不可用 | M5 |
+| 11 | `dashmap` 在 workspace 依赖中声明但未被任何 crate 使用 | 依赖膨胀 | 移除或接入 |
 
 ---
 
@@ -282,6 +289,7 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 | 2026-10-31 | **M4 UDP 转发**：服务端按协议分流建立 UDP 会话（双向空闲才回收）；客户端同端口 TCP+UDP 监听、按本地源地址分发独立 KCP 通道；C++ 客户端↔Rust 服务端、Rust 客户端↔C++ 服务端、Rust↔Rust 三向 UDP echo 全部通过；测试增至 81 |
 | 2026-10-31 | **M4 FEC**：新增 `transport::fec`（FecSender/FecReceiver），三种包层帧的解析与路由接入客户端/服务端；`fec=10:3` 下 32 KiB 数据与 C++ 双向互通；顺带修复 KCP 大消息缓冲过小的问题；测试增至 87 |
 | 2026-10-31 | **M4 mux**：新增 `transport::mux`（`MuxTunnel` / `MuxRecord` / 事件与命令队列）；客户端 `mux_tunnels` 共享通道、TCP/UDP 按 `connection_id` 复用；服务端 mux 会话、目标连接建立、`mux_cancel` 与 4 秒保留期、UDP 空闲回收、`pre_connect_custom_address`；`mux_tunnels=3` 下 3 路并发 TCP + 64 KiB + UDP 与 C++ 双向互通，mux+FEC 组合通过；测试增至 90 |
+| 2026-10-31 | docs: 按代码现状校准文档：更新 crate 清单、加密模式数量、代码行数与 FEC/mux 完成状态；补充 `ipv4_only`/`ipv6_only`、客户端目标选择、`blast`、带宽未应用等已知差异 |
 
 ---
 

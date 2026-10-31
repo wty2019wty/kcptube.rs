@@ -31,7 +31,7 @@ pub enum EncryptionMode {
     AesGcm,
     /// AES-256-OCB，12 字节 IV
     AesOcb,
-    /// ChaCha20-Poly1305，**8 字节 IV**（与 Botan 的 tag 构造尚未对齐）
+    /// ChaCha20-Poly1305，**8 字节 IV**（Botan 走原始版 draft-agl AEAD）
     Chacha20,
     /// XChaCha20-Poly1305，24 字节 IV
     Xchacha20,

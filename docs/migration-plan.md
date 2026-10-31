@@ -12,7 +12,7 @@
 
 - 原项目 KCP Tube 是 C++20 实现，网络层基于 asio，加密/FEC 依赖 Botan3，共约 **14.3k 行**（含第三方 ikcp 1.1k 行）。
 - 本仓库将其完整保留在 `legacy-cpp/`，作为协议参考与互通测试基准。
-- Rust 侧已建立 workspace 骨架（10 个 crate + 1 个可执行程序），详见 `docs/progress.md`。
+- Rust 侧已建立 workspace（11 个 crate：10 个 lib + 1 个 bin），详见 `docs/progress.md`。
 
 ### 1.2 目标
 
@@ -33,7 +33,7 @@
 - [ ] Rust 客户端 ↔ C++ 服务端：TCP 转发可用，单连接吞吐不低于 C++ 版的 80%
 - [ ] Rust 服务端 ↔ C++ 客户端：同上
 - [ ] `mode=client / server / relay` 三种模式均可运行
-- [ ] 5 种加密模式（含 `xor`、`none`）全部与 C++ 互通
+- [ ] 6 种加密模式（4 种 AEAD + `xor`、`none`）全部与 C++ 互通
 - [ ] FEC 开启/关闭均可互通
 - [ ] mux_tunnels > 1 时多路复用正常
 - [ ] 端口跳跃（`dport_refresh`）可用
@@ -72,7 +72,7 @@
 | `modes/tester.cpp` | 392 | `--try` 连通性测试 | `kcptube-tester`（待建） | 中 | M5 |
 | `networks/kcp.cpp` | 292 | ikcp 的 C++ 包装 | `kcptube-kcp` | 低 | M2 |
 | `networks/dns_helper.cpp` | 288 | DNS TXT 查询（Windows DnsQuery / resolv） | `kcptube-transport` | 中 | M4 |
-| `shares/share_defines.cpp` | 237 | 参数工具、日志、ZFEC 初始化 | `kcptube-config` / `kcptube-fec` | 低 | M1 |
+| `shares/share_defines.cpp` | 237 | 参数工具、日志、ZFEC 初始化 | `kcptube-config` / `kcptube-logging` / `kcptube-fec` | 低 | M1 |
 | `networks/stun.cpp` | 118 | STUN 打洞（RFC3489/8489） | `kcptube-transport` | 中 | M4 |
 | `networks/kcp_updater.cpp` | 117 | KCP 定时驱动线程 | `kcptube-transport` | 中 | M2 |
 | `3rd_party/ikcp.cpp` | 1109 | KCP 协议（cnbatch 改版） | `kcptube-kcp` | 中 | M2 |
@@ -84,12 +84,13 @@
 crates/
   protocol/    常量、Feature/ProtocolType、包层头、字节序工具   （零依赖）
   crypto/      SHA3 派生、IV 展开、AEAD、xor 差分
-  fec/         FEC 配置 + ZFEC 接口
-  kcp/         KCP 配置 + 接口
-  config/      UserSettings（字段已对齐）+ 解析器（待实现）
-  transport/   tokio 会话与 KCP 调度（接口）
-  client/      客户端模式（仅入口）
-  server/      服务端模式（仅入口）
+  fec/         FEC 配置 + ZFEC 编解码
+  kcp/         KCP 配置 + ikcp 移植
+  config/      UserSettings + 完整 .conf 解析器
+  transport/   tokio 会话、KCP 调度、加密包层、FEC 与 mux
+  logging/     messages / status / ip 三类日志文件
+  client/      客户端模式（TCP/UDP/mux）
+  server/      服务端模式（TCP/UDP/mux）
   relay/       中继模式（仅入口）
   kcptube/     可执行程序（clap）
 ```
@@ -135,7 +136,7 @@ crates/
 | `asio::io_context ioc_heavy`（N 线程） | 多线程 `tokio` runtime（数据面） |
 | `asio::steady_timer` | `tokio::time::sleep_until` |
 | `KCPUpdater` 独立线程 + 条件变量 | 单独 task + `BinaryHeap` 最小堆 |
-| `std::shared_ptr<session>` 生命周期 | `Arc<Session>` + `CancellationToken` |
+| `std::shared_ptr<session>` 生命周期 | `Arc<KcpChannel>` / `Arc<KcpEndpoint>` + 显式关闭（`JoinSet` / `mpsc`） |
 | `asio::post` 跨线程 | `mpsc` / `JoinSet` |
 | 线程池 `task_thread_pool` | 数据面直接由 tokio 调度，移除线程池 |
 
@@ -196,7 +197,7 @@ KCP 本体（ikcp）是标准大端格式。
 - 每个包发送前用 2 字节随机数展开重写 IV，并把该 2 字节附加在密文尾部。
 - AAD 固定为 `"KCP PortHopping"`。
 - `xor` / `none`：数据尾部附 CRC32 折叠的 2 字节校验；`xor` 额外做一次前向差分。
-- **已验证**：5 种模式（`aes-gcm` / `aes-ocb` / `chacha20` / `xchacha20` / `xor`）均与 Botan 3.13 逐字节一致。
+- **已验证**：4 种 AEAD 模式（`aes-gcm` / `aes-ocb` / `chacha20` / `xchacha20`）与 `xor` / `none` 的 CRC32 校验均与 Botan 3.13 逐字节一致。
 - `chacha20` 使用 **8 字节 nonce**，Botan 会走**原始版** ChaCha20-Poly1305（draft-agl）：
   `AAD || LE64(AAD 长度) || 密文 || LE64(密文长度)`，不做 16 字节补齐；
   12/24 字节 nonce 才走 RFC 8439 的补齐 + 两个 LE64 长度。
@@ -459,7 +460,7 @@ cmake -S legacy-cpp -B build/legacy -G Ninja && cmake --build build/legacy
 
 - 分支：`rs-dev` 开发，`main` 保持与上游可对比状态。
 - 提交信息：`<类型>: <中文描述>`，类型用 `feat / fix / refactor / test / docs / chore`。
-- 每个里程碑结束打 tag：`m1-protocol`、`m2-kcp` 等。
+- 每个里程碑结束打 tag（如 `m1-protocol`、`m2-kcp`）。当前仓库尚未创建里程碑 tag，仅有上游 `v0.x`。
 
 ### 9.3 质量门禁
 

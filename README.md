@@ -9,13 +9,13 @@
 | 模块 | 状态 |
 |---|---|
 | 协议包层（`crates/protocol`） | 🟢 包层/数据层/mux/settings_wrapper 编解码完成 |
-| 加密层（`crates/crypto`） | 🟢 5 种模式全部与 Botan 3.13 逐字节一致 |
+| 加密层（`crates/crypto`） | 🟢 4 种 AEAD + `xor`/`none` 全部与 Botan 3.13 逐字节一致 |
 | FEC（`crates/fec`） | 🟢 ZFEC 与 Botan share 逐字节一致，含 `fec_container` |
 | KCP（`crates/kcp`） | 🟢 ikcp 全量移植，与 C++ 输出逐字节对撞 |
 | 配置解析（`crates/config`） | 🟢 完整解析与校验，`--check-config` 可用 |
 | 传输层（`crates/transport`） | 🟢 KCP 调度、加密包层、UDP/TCP 封装、`KcpChannel`、FEC 收发流水线、mux 隧道 |
 | 日志（`crates/logging`） | 🟢 messages / status / ip 三类文件，格式与 C++ 一致 |
-| client / server / relay | 🟢 client/server 支持 TCP + UDP 单通道（含保活、会话回收、握手重试）；relay 仍为入口 |
+| client / server / relay | 🟢 client/server 支持 TCP + UDP、单通道与 mux 多路复用（含 FEC、保活、会话回收、握手重试）；relay 仍为入口 |
 | 连通性测试（`--try`） | 🟡 未实现 |
 
 ## 文档
