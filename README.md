@@ -80,7 +80,7 @@ cargo zigbuild --release --target x86_64-unknown-linux-musl
 - `chacha20` 的 8 字节 nonce 对应 Botan 的**原始版** ChaCha20-Poly1305（draft-agl），
   与 RFC 8439 的差别只在 Poly1305 长度编码
 - `xor` / `none` 的 2 字节校验是大端 CRC32 折叠值（Botan `store_be`）
-- 双方系统时间差不得超过 **255 秒**
+- 双方系统时间差（绝对值）不得超过 **255 秒**，否则收包端会直接丢弃；两端时钟相差 1 秒以内也会被正常接受
 - 包格式没有版本号：任何协议改动都需要两端同时升级
 
 ## 许可

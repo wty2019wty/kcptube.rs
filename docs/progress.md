@@ -1,6 +1,6 @@
 # kcptube Rust 移植进度
 
-> 最后更新：2026-10-31
+> 最后更新：2026-11-01
 > 分支：`rs-dev`　基线提交：`a0d7164`（legacy-cpp 迁移 + .gitignore）
 > 计划文档：[`docs/migration-plan.md`](migration-plan.md)
 
@@ -11,7 +11,7 @@
 | 指标 | 数值 |
 |---|---|
 | C++ 参考实现 | 14,308 行（`legacy-cpp/`，含 ikcp 1,109 行） |
-| Rust 代码 | 约 9,919 行（22 个 `.rs` 文件，非空行） |
+| Rust 代码 | 约 10,180 行（22 个 `.rs` 文件，非空行） |
 | crate 数 | 11（10 个 lib + 1 个 bin） |
 | 单元/集成测试 | 97 个，全部通过 |
 | 整体完成度 | **M0~M3 完成，M4 约 85%** |
@@ -38,7 +38,7 @@ M6 STUN/DDNS       ░░░░░░░░░░   0%
 | `crates/kcp` | `3rd_party/ikcp.cpp`、`networks/kcp.cpp` | 🟢 100% | ikcp 全量移植；发送/重传/拥塞/窗口探测与 C++ 输出逐字节对撞通过 |
 | `crates/config` | `configurations.cpp`（1010 行） | 🟢 100% | 两遍解析、预设展开、MTU、relay 分段、自定义映射、日志路径、错误文本全部对齐 |
 | `crates/transport` | `connections.cpp`、`kcp_updater.cpp`、`mux_tunnel.cpp` | 🟢 100% | KCP 调度、加密包层、UDP/TCP 封装、`KcpChannel`、FEC 收发流水线、mux 隧道、可切换发送 socket |
-| `crates/client` | `client.cpp`（1917 行） | 🟢 95% | TCP + UDP 监听、握手（超时换端口重试）、`raw_data`/mux 转发、端口跳跃、随机目标选择、保活、状态日志；`[custom_input*]` 映射未接入 |
+| `crates/client` | `client.cpp`（1917 行） | 🟢 95% | TCP + UDP 监听、握手（超时换端口、多地址逐个尝试、ICMP 错误不中断）、`raw_data`/mux 转发、端口跳跃、随机目标选择、保活、状态日志；`[custom_input*]` 映射未接入 |
 | `crates/server` | `server.cpp`（1323 行） | 🟢 95% | 端口范围监听、TCP/UDP/mux 转发、端口跳跃重定向、会话回收、保活、状态日志；STUN/DDNS 移至 M6 |
 | `crates/logging` | `share_defines.cpp` 日志函数 | 🟢 100% | messages（追加）/ status（覆盖）两类文件已接入，ip 文件接口预留（随 M6）、`to_speed_unit` 与 C++ 逐档一致 |
 | `crates/relay` | `relay.cpp`（1802 行） | 🟡 5% | 仅入口；配置已能拆出 ingress/egress |
@@ -133,7 +133,7 @@ Rust 输出完全一致，见 `crates/fec/src/lib.rs::vectors_match_botan_zfec`�
 - [x] **server**：`keep_alive` 周期发送与响应时间戳
 - [x] **client**：本地 TCP 监听，每个连接独立 UDP socket + 握手
 - [x] **client**：握手响应解析，切换到服务端分配的 conv
-- [x] **client**：握手 30 秒超时后**换新本地端口重试**（对齐 `handshake_timeout_detection`）
+- [x] **client**：握手 30 秒超时后**换新本地端口重试**（对齐 `handshake_timeout_detection`），并对解析出的每个地址依次尝试
 - [x] **client**：TCP ↔ `raw_data` 双向转发，保活发送/响应
 - [x] **client**：连接结束后保留 4 秒冲刷最后的 `disconnect`
 - [x] **加密**：默认 `aes-gcm` 全流程
@@ -144,6 +144,11 @@ Rust 输出完全一致，见 `crates/fec/src/lib.rs::vectors_match_botan_zfec`�
   - Rust 客户端 → Rust 服务端：自动化集成测试 `crates/server/tests/interop.rs`
   - 保活 + 连续重连：`keep_alive_and_reconnect`（跨 3 个保活周期 + 2 次重连）
   - 状态日志实测：`server_output.log` / `<配置名>_status.log` 按 60 秒周期写入
+- [x] 握手健壮性（跨设备必需，2026-11-01 修复）：
+  - 时间窗按 C++ `std::abs` 双向容忍 ±255 秒时钟偏差
+  - 底层 recv 错误（ICMP 不可达）不再中断握手，由 30 秒超时统一兜底
+  - 域名解析出的全部地址逐个尝试（A/AAAA 任一可用即可）
+  - 未指定 IP 版本时按双栈 `[::]` 监听
 - [x] 连续 1 小时稳定性测试
   - 2026-10-31 19:42 完成（Rust 客户端 ↔ Rust 服务端，`keep_alive=5`）
   - 长连接每 5 秒往返：**719 / 719 成功，0 失败**
@@ -280,7 +285,7 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 | 7 | `ignore_destination_*` / `[custom_input*]` 映射转发未接入；mux `pre_connect_custom_address` 发送侧待补 | `ignore_*` 与自定义映射场景不可用 | M4 剩余 |
 | 8 | STUN / DDNS 未实现（已从 M4 移入 M6） | 公网地址探测与动态 DNS 不可用 | M6 |
 | 9 | 端口跳跃时机不同：Rust 对所有数据通道按 `dport_refresh` 周期主动跳跃；C++ 跳过 TCP，且仅在链路空闲超时后探测 | 与 C++ 的跳跃频率/触发条件不一致，可能影响 QoS 观察 | 评估是否对齐 C++ 或保留现状并文档说明 |
-| 12 | 未指定 `ipv4_only` / `ipv6_only` 时 Rust 只监听 IPv4 通配 `0.0.0.0`（C++ 默认 IPv6 通配/双栈） | 默认不监听 IPv6；需要 IPv6 时必须显式 `ipv6_only=yes` | 保持现状并在文档说明 |
+| 12 | ~~未指定 `ipv4_only` / `ipv6_only` 时 Rust 只监听 IPv4 通配 `0.0.0.0`~~ | 已修复：改为与 C++ 一致的 IPv6 通配 `[::]` + 双栈（`ipv6_only` 才置 `IPV6_V6ONLY`） | 已关闭 |
 | 13 | 多配置文件按顺序启动：`main.rs` 逐个 `await` 各 profile，客户端/服务端首个常驻的配置不退出时后续配置不会启动（C++ 并发运行） | 多配置文件部署实际只生效第一个 | 后续改为并发启动 |
 
 ---
@@ -326,6 +331,10 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 | 2026-10-31 | docs: 按代码行为校正文档与注释：`mtu` 优先于 `kcp_mtu`、`listen_on` 仅接受 IP、多配置文件为顺序启动（登记已知问题 #13）、默认仅监听 IPv4（#12）、`ip_address.log` 尚未接入、端口范围含两端；修正 `cipher.rs` 校验字节序注释与过时提示文案；非空行数更新为 9,919 |
 | 2026-10-31 | test: 稳定 interop 测试：端口改为进程内统一分配（同一端口同时校验 TCP/UDP、避开常见临时端口段，覆盖 echo/server/client/端口跳跃范围），并让服务端先于客户端启动，消除 mux 启动握手与 UDP 端口尚未监听的竞态；连续 50 次运行 0 失败 |
 | 2026-10-31 | fix: mux 通道改为后台维护（`maintain_mux_tunnels`）：建链失败不再让 `Client::run` 退出，而是 2 秒后重试；通道断开后由该任务统一补建，行为对齐 C++ `establish_mux_channels`；无可用隧道时本地 TCP 连接排队等待（最长 30 秒）；新增 `interop.rs::mux_client_queues_until_server_starts` 回归测试；测试增至 97 |
+| 2026-11-01 | **fix（跨设备连不上）**：`PacketCodec::open_frame` 的时间窗校验误写成单向无符号减法，只要对端时钟比本机快 1 秒，差值就回绕成约 40 亿而被判为过期，**两台设备（时钟未严格同步）完全无法握手**。改为与 C++ `calculate_difference` 一致的 `abs(now - ts) > 255`，并补回归测试（±1、±120 秒接受，±300 秒丢弃） |
+| 2026-11-01 | fix: 握手阶段忽略底层 recv 错误（ICMP 端口不可达导致的 `WSAECONNRESET` / `ConnectionRefused`），对齐 C++ `udp_client::handle_receive` 的「出错即重新挂起接收」；此前客户端会立即放弃本地连接，服务端晚启动或防火墙回 ICMP 时表现为「连不上」 |
+| 2026-11-01 | fix: 域名解析保留**全部**候选地址（`resolve_endpoints_filtered`），握手与端口跳跃逐个尝试；此前只取 `lookup_host` 的第一个结果，DDNS/`localhost` 解析到 IPv6 而服务端只监听 IPv4 时会一直超时 |
+| 2026-11-01 | fix: 未指定 `ipv4_only` / `ipv6_only` 时监听地址改为 `[::]` 双栈（与 C++ `udp_server::initialise` 一致，仅 `ipv6_only` 才置 `IPV6_V6ONLY`），修复默认无法被 IPv6 / `localhost(::1)` 访问的问题；已知问题 #12 关闭 |
 
 ---
 

@@ -89,9 +89,14 @@ impl PacketCodec {
         let plain = self.cipher.decrypt(datagram)?;
         let (header, _) = PacketLayer::decode(&plain)?;
 
-        // 对应 C++ `calculate_difference<int64_t>((uint32_t)now, packet_timestamp)`
-        let difference = now_seconds_u32().wrapping_sub(header.timestamp);
-        if i64::from(difference) > constant::TIME_GAP_SECONDS {
+        // 对应 C++ `calculate_difference<int64_t>((uint32_t)now, packet_timestamp)`。
+        //
+        // C++ 的 `calculate_difference` 是 `std::abs(a - b)`，**双向**容忍
+        // ±`gbv_time_gap_seconds` 秒的时钟偏差。这里早期误写成单向无符号减法：
+        // 只要对端时钟比本机快 1 秒，差值就会回绕成 40 亿而被全部丢弃，
+        // 表现为两台设备（时钟不同步）完全连不上。必须与 C++ 一样取绝对值。
+        let difference = (i64::from(now_seconds_u32()) - i64::from(header.timestamp)).abs();
+        if difference > constant::TIME_GAP_SECONDS {
             return Err(TransportError::TimeGap);
         }
 
@@ -346,15 +351,17 @@ pub async fn resolve_endpoint(host: &str, port: u16) -> std::io::Result<SocketAd
     resolve_endpoint_filtered(host, port, None).await
 }
 
-/// 按地址族解析 `host:port`。
+/// 按地址族解析 `host:port`，返回**全部**候选地址（保持解析顺序、去重）。
 ///
-/// `want_ipv4` 为 `Some(true)` / `Some(false)` 时只接受 IPv4 / IPv6 地址，
-/// 对应配置里的 `ipv4_only` / `ipv6_only`。
-pub async fn resolve_endpoint_filtered(
+/// C++ 版用 `udp::resolver` 的 `v4_mapped | all_matching` 解析，
+/// 通过一个双栈 socket 同时覆盖 IPv4 / IPv6。Rust 的 socket 有明确地址族，
+/// 因此这里保留所有候选，让上层在某个地址不可达时继续尝试下一个
+/// （例如 DDNS 同时有 A/AAAA 记录，而服务端只监听其中一种）。
+pub async fn resolve_endpoints_filtered(
     host: &str,
     port: u16,
     want_ipv4: Option<bool>,
-) -> std::io::Result<SocketAddr> {
+) -> std::io::Result<Vec<SocketAddr>> {
     let matches = |ip: &std::net::IpAddr| match want_ipv4 {
         Some(true) => ip.is_ipv4(),
         Some(false) => ip.is_ipv6(),
@@ -368,12 +375,37 @@ pub async fn resolve_endpoint_filtered(
                 format!("地址 {host} 不符合配置的 IP 版本限制"),
             ));
         }
-        return Ok(SocketAddr::new(ip, port));
+        return Ok(vec![SocketAddr::new(ip, port)]);
     }
 
-    tokio::net::lookup_host((host, port))
+    let mut addresses = Vec::new();
+    for address in tokio::net::lookup_host((host, port)).await? {
+        if matches(&address.ip()) && !addresses.contains(&address) {
+            addresses.push(address);
+        }
+    }
+    if addresses.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AddrNotAvailable,
+            format!("无法解析地址 {host}:{port}"),
+        ));
+    }
+    Ok(addresses)
+}
+
+/// 按地址族解析 `host:port`。
+///
+/// `want_ipv4` 为 `Some(true)` / `Some(false)` 时只接受 IPv4 / IPv6 地址，
+/// 对应配置里的 `ipv4_only` / `ipv6_only`。
+pub async fn resolve_endpoint_filtered(
+    host: &str,
+    port: u16,
+    want_ipv4: Option<bool>,
+) -> std::io::Result<SocketAddr> {
+    resolve_endpoints_filtered(host, port, want_ipv4)
         .await?
-        .find(|address| matches(&address.ip()))
+        .into_iter()
+        .next()
         .ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::AddrNotAvailable,
@@ -520,14 +552,25 @@ mod tests {
         let codec = PacketCodec::new(EncryptionMode::None, "");
         let now = now_seconds_u32();
 
+        // 超过 255 秒的偏差（过去或未来）都要丢弃，与 C++ `std::abs` 一致
         let stale = codec.seal_at(now.wrapping_sub(300), b"x").unwrap();
         assert!(matches!(codec.open(&stale), Err(TransportError::TimeGap)));
+
+        let too_far_future = codec.seal_at(now.wrapping_add(300), b"x").unwrap();
+        assert!(matches!(
+            codec.open(&too_far_future),
+            Err(TransportError::TimeGap)
+        ));
 
         let fresh = codec.seal_at(now.wrapping_sub(100), b"x").unwrap();
         assert!(codec.open(&fresh).is_ok());
 
-        // C++ 使用无符号差值，未来时间戳会被视为超大差值而丢弃
-        let future = codec.seal_at(now.wrapping_add(1), b"x").unwrap();
-        assert!(matches!(codec.open(&future), Err(TransportError::TimeGap)));
+        // 对端时钟略微超前（两台设备未严格同步的常态）必须照常接受。
+        // 早期单向无符号减法会把它当成 40 亿秒的偏差，导致跨设备完全连不上。
+        let slightly_ahead = codec.seal_at(now.wrapping_add(1), b"x").unwrap();
+        assert!(codec.open(&slightly_ahead).is_ok());
+
+        let ahead = codec.seal_at(now.wrapping_add(120), b"x").unwrap();
+        assert!(codec.open(&ahead).is_ok());
     }
 }

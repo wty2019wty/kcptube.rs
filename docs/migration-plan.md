@@ -183,7 +183,9 @@ KCP 本体（ikcp）是标准大端格式。
 ### 5.3 时间戳
 
 - 秒级 Unix 时间，取低 32 位。
-- 接收端与本地时间差 > **255 秒** 直接丢弃（`gbv_time_gap_seconds`）。
+- 接收端与本地时间差的**绝对值** > **255 秒** 直接丢弃（`gbv_time_gap_seconds`）。
+  C++ 的 `calculate_difference` 是 `std::abs(a - b)`，即双向容忍 ±255 秒；
+  不能写成单向无符号减法，否则对端时钟只要快 1 秒就会被全部丢弃。
 - 保活超时 = 255 >> 3 = **31 秒**。
 
 ### 5.4 加密
@@ -220,6 +222,10 @@ KCP 本体（ikcp）是标准大端格式。
 2. 服务端校验后返回 `initialise` 响应，客户端确认后建立 KCP 数据通道。
 3. 之后所有业务数据走 `raw_data`（单通道）或 `mux_transfer`（多路复用）。
 4. 保活用 `keep_alive` / `keep_alive_response`。
+5. 超时与重试（与 C++ `handshake_timeout_detection` 对应）：
+   - 单次握手 30 秒；超时后丢弃当前 UDP socket、换新本地端口重新握手。
+   - 域名解析出的多个地址（A/AAAA）逐个尝试；单个地址失败只换下一个，不中断本地连接。
+   - 底层 recv 错误（ICMP 不可达等）不中断握手，由超时统一兜底（对应 C++ `udp_client::handle_receive`）。
 
 ### 5.7 端口跳跃
 

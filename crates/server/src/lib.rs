@@ -109,14 +109,16 @@ impl Server {
                     )));
                 }
             }
-            let ipv6_only = settings.ip_version_only.want_ipv4() == Some(false);
+            // 与 C++ `udp_server::initialise` 一致：IPv6 监听地址只有
+            // `ipv6_only=yes` 时才设置 IPV6_V6ONLY，否则是双栈。
+            let v6only = settings.ip_version_only.ipv6_v6only();
             for port in &settings.listen_ports {
                 let addr = SocketAddr::new(ip, *port);
                 let socket = match UdpEndpoint::bind_with(
                     addr,
                     UdpBindOptions {
                         reuse_address: true,
-                        only_v6: (addr.is_ipv6() && ipv6_only).then_some(true),
+                        only_v6: addr.is_ipv6().then_some(v6only),
                     },
                 )
                 .await

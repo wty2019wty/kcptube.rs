@@ -83,15 +83,24 @@ impl IpVersionOnly {
         !matches!(self, IpVersionOnly::NotSet)
     }
 
-    /// 按配置选择通配监听地址：`ipv6_only` 用 `[::]`，其余用 `0.0.0.0`。
+    /// 按配置选择通配监听地址。
     ///
-    /// 未显式指定时保持与旧版 Rust 实现一致的 IPv4 监听，避免在缺少 IPv6
-    /// 的环境中启动失败；需要只监听 IPv6 时设置 `ipv6_only=yes`。
+    /// 与 C++ 一致：只有 `ipv4_only` 才用 `0.0.0.0`；未指定或 `ipv6_only`
+    /// 时都用 `[::]`。C++ 的 `udp_server::initialise` 只在 `ipv6_only` 时
+    /// 打开 `IPV6_V6ONLY`，所以未指定时是**双栈**（同时收 IPv4 与 IPv6），
+    /// 这也是 C++ 版默认能同时被两种地址族访问的原因。
     pub const fn wildcard_ip(self) -> std::net::IpAddr {
         match self {
-            IpVersionOnly::Ipv6 => std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED),
-            _ => std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+            IpVersionOnly::Ipv4 => std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+            _ => std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED),
         }
+    }
+
+    /// 监听 IPv6 地址时是否打开 `IPV6_V6ONLY`。
+    ///
+    /// 未指定或 `ipv4_only` 时为 `false`（双栈），只有 `ipv6_only` 才是 `true`。
+    pub const fn ipv6_v6only(self) -> bool {
+        matches!(self, IpVersionOnly::Ipv6)
     }
 
     /// 解析目标地址时应限定的地址族。
@@ -568,10 +577,14 @@ destination_port=80
             IpVersionOnly::Ipv6.wildcard_ip(),
             std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED)
         );
+        // 未指定时与 C++ 一致：IPv6 通配 + 双栈
         assert_eq!(
             IpVersionOnly::NotSet.wildcard_ip(),
-            std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)
+            std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED)
         );
+        assert!(!IpVersionOnly::NotSet.ipv6_v6only());
+        assert!(!IpVersionOnly::Ipv4.ipv6_v6only());
+        assert!(IpVersionOnly::Ipv6.ipv6_v6only());
         assert_eq!(IpVersionOnly::Ipv4.want_ipv4(), Some(true));
         assert_eq!(IpVersionOnly::Ipv6.want_ipv4(), Some(false));
         assert_eq!(IpVersionOnly::NotSet.want_ipv4(), None);
