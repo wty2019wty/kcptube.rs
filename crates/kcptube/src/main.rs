@@ -22,10 +22,14 @@ use kcptube_relay::Relay;
 use kcptube_server::Server;
 use std::path::PathBuf;
 
+/// 程序自身版本号：直接取本 crate（即 workspace `Cargo.toml`）里声明的版本，
+/// 与 `APP_VERSION`（对齐 C++ 版的协议兼容目标版本）区分开。
+const APP_DISPLAY_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[derive(Parser, Debug)]
 #[command(
     name = "kcptube",
-    version = APP_VERSION,
+    version = APP_DISPLAY_VERSION,
     about = "KCP Tube rewritten in Rust (wire-compatible with the C++ version)"
 )]
 struct Cli {
