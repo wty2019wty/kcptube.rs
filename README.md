@@ -21,9 +21,21 @@
 
 ## 文档
 
+使用文档（基于本仓库 Rust 版代码编写）：
+
+- [使用文档首页](docs/README.md)：模式介绍、命令行用法、配置文件格式速览
+- [参数列表](docs/parameters.md)：全部配置项、KCP 预设值、加密与校验、带宽、日志
+- [常规配置](docs/client-server.md)：客户端 / 服务端配置示例、端口跳跃、多地址
+- [中继模式配置](docs/relay-mode.md)（运行期尚未实现）
+- [FEC 使用介绍](docs/fec.md)、[MTU 设置](docs/mtu.md)
+- [自定义映射](docs/custom-ip-mappings.md)（转发尚未接入）、[具体示例](docs/specific-examples.md)
+
+开发者文档：
+
 - [移植计划](docs/migration-plan.md)：目标、架构、阶段划分、协议关键事实、风险登记
 - [移植进度](docs/progress.md)：当前状态、测试统计、已知问题、下一步
-- 上游使用文档：[`legacy-cpp/docs/`](legacy-cpp/docs)
+
+上游 C++ 版使用文档（仅供参考，行为以本仓库文档为准）：[`legacy-cpp/docs/`](legacy-cpp/docs)
 
 ## 目录结构
 
@@ -41,7 +53,7 @@ crates/
   relay/       中继模式
   kcptube/     可执行程序入口
 legacy-cpp/    原 C++ 实现（协议参考，勿直接修改）
-docs/          使用文档（见 legacy-cpp/docs）
+docs/          使用文档 + 移植计划/进度
 ```
 
 ## 构建与测试

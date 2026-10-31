@@ -317,6 +317,7 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 | 2026-10-31 | **C++ 互通验证**：Rust 客户端→C++ 服务端（TCP/UDP）均跨越 2 次跳跃持续收发；C++ 客户端→Rust 服务端 UDP 跨越跳跃持续收发。期间修复服务端握手通道把 `test_connection` 错回为 `keep_alive_response` 的兼容性问题；记录 C++ 端口跳跃仅覆盖 UDP/mux 且由空闲超时触发的语义差异 |
 | 2026-10-31 | 版本号显示方式：`--version` 改用 crate 版本（`APP_DISPLAY_VERSION`），与协议兼容目标版本 `APP_VERSION` 区分；提取 `print_version_banner` 统一横幅输出并注明须与 C++ 逐字一致；已知问题登记 #10 |
 | 2026-10-31 | 版本号统一：启动横幅、usage 与 `--version` 全部使用根 `Cargo.toml` 的 `version`（`0.1.0`），删除 `APP_VERSION` 常量，程序只对外自报一个版本号；横幅不再与 C++ 版逐字一致，协议兼容目标仍记录在 `docs/migration-plan.md`；已知问题 #10 关闭 |
+| 2026-10-31 | docs: 新增使用文档全套（`docs/README.md` 索引、`parameters.md` 参数手册、`client-server.md`、`relay-mode.md`、`fec.md`、`mtu.md`、`custom-ip-mappings.md`、`specific-examples.md`），参照 `legacy-cpp/docs/` 篇目结构、基于 Rust 代码实际行为编写；校准 KCP 预设值（fast1/fast2 `kcp_interval=0`）、`kcp_mtu` 默认值（1418/1405）、带宽后缀与 `/8` 换算怪癖、`{}` 忽略语法、relay 段继承规则等与 C++ 对齐的细节；对 `--try`、relay 运行期、`[custom_input*]` 转发、STUN/DDNS、`fib_*` 等未实现项逐一标注；根 `README.md` 文档导航同步更新 |
 
 ---
 
