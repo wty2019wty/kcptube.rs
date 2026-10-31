@@ -1,0 +1,23 @@
+[package]
+name = "kcptube-crypto"
+description = "kcptube 加密层：AEAD 模式、密钥/IV 派生（与 Botan3 输出逐字节兼容）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+aes.workspace = true
+aes-gcm.workspace = true
+ocb3.workspace = true
+chacha20.workspace = true
+chacha20poly1305.workspace = true
+sha3.workspace = true
+typenum.workspace = true
+thiserror.workspace = true
+rand.workspace = true
+crc32fast.workspace = true
+
+[dev-dependencies]
+hex.workspace = true

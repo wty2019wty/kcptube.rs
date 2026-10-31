@@ -1,0 +1,11 @@
+[package]
+name = "kcptube-kcp"
+description = "KCP 传输层：移植自 ikcp（cnbatch 改版），保持线格式兼容"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror.workspace = true

@@ -1,0 +1,25 @@
+[package]
+name = "kcptube"
+description = "kcptube 的 Rust 实现（与 C++ 版协议兼容）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+default-run = "kcptube"
+
+[[bin]]
+name = "kcptube"
+path = "src/main.rs"
+
+[dependencies]
+kcptube-protocol.workspace = true
+kcptube-config.workspace = true
+kcptube-client.workspace = true
+kcptube-server.workspace = true
+kcptube-relay.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

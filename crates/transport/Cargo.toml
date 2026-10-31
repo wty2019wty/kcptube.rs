@@ -1,0 +1,15 @@
+[package]
+name = "kcptube-transport"
+description = "网络传输层：TCP/UDP 会话、KCP 调度器（对应 asio 的那一层）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+kcptube-kcp.workspace = true
+kcptube-protocol.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

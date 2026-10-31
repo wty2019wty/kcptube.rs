@@ -1,0 +1,13 @@
+[package]
+name = "kcptube-config"
+description = "kcptube 配置文件解析（与 C++ 版 .conf 格式 100% 兼容）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+kcptube-crypto.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

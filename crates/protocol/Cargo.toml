@@ -1,0 +1,10 @@
+[package]
+name = "kcptube-protocol"
+description = "kcptube 线格式：包层、特性与协议枚举（与 C++ 版逐字节兼容）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]

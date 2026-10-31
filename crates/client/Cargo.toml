@@ -1,0 +1,15 @@
+[package]
+name = "kcptube-client"
+description = "kcptube 客户端模式"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+kcptube-config.workspace = true
+kcptube-transport.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

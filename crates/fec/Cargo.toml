@@ -1,0 +1,11 @@
+[package]
+name = "kcptube-fec"
+description = "kcptube 的前向纠错（ZFEC / Reed-Solomon）封装"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror.workspace = true

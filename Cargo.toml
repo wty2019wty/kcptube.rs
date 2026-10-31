@@ -1,0 +1,54 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "BSD-3-Clause"
+repository = "https://github.com/wty2019wty/kcptube.rs"
+authors = ["kcptube.rs contributors"]
+
+[workspace.dependencies]
+# ---- 内部 crate ----
+kcptube-protocol = { path = "crates/protocol" }
+kcptube-crypto = { path = "crates/crypto" }
+kcptube-fec = { path = "crates/fec" }
+kcptube-kcp = { path = "crates/kcp" }
+kcptube-config = { path = "crates/config" }
+kcptube-transport = { path = "crates/transport" }
+kcptube-client = { path = "crates/client" }
+kcptube-server = { path = "crates/server" }
+kcptube-relay = { path = "crates/relay" }
+
+# ---- 第三方 ----
+# 异步运行时：对应 C++ 版的 asio + io_context + 线程池
+tokio = { version = "1.54", features = ["full"] }
+# 加密原语：对应 Botan3 的 AEAD_Mode
+aes = "0.9"
+aes-gcm = "0.11"
+ocb3 = "0.2"
+chacha20 = { version = "0.10", features = ["legacy"] }
+chacha20poly1305 = "0.11"
+sha3 = "0.12"
+typenum = "1"
+# 命令行与错误处理
+clap = { version = "4.5", features = ["derive"] }
+anyhow = "1"
+thiserror = "2"
+# 日志
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# 网络与通用工具
+socket2 = "0.6"
+rand = "0.9"
+crc32fast = "1"
+dashmap = "6"
+# 测试辅助
+hex = "0.4"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
