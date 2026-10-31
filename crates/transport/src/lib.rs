@@ -16,16 +16,19 @@
 //! | `KCPUpdater` 独立线程 + 条件变量 | 本文件的最小堆调度器 + 调用方 `select!` |
 
 pub mod channel;
+pub mod fec;
 pub mod tcp;
 pub mod udp;
 
 pub use channel::KcpChannel;
+pub use fec::{FecReceiver, FecSender};
 pub use tcp::{TcpListenerSession, TcpSession};
 pub use udp::{UdpBindOptions, UdpEndpoint};
 
 use kcptube_crypto::{Cipher, CryptoError, EncryptionMode};
 use kcptube_kcp::{Kcp, KcpConfig, KcpError};
 use kcptube_protocol::constant;
+use kcptube_protocol::packet::{PacketLayerData, PacketLayerFec};
 use kcptube_protocol::{PacketLayer, ProtocolError};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -37,8 +40,7 @@ use tokio::sync::Mutex;
 /// 单条 KCP 消息的最大长度（KCP 会把分片重组成一条消息，可能远大于单个 UDP 包）。
 pub const MAX_INNER_MESSAGE: usize = 65536;
 
-/// 单个 UDP 数据报的加解密与包层处理（对应 C++ `encrypt_data` + `create_packet`）。
-///
+/// 单个 UDP 数据报的加解密与包层处理（对应 C++ `encrypt_data` + `create_packet`）。///
 /// 顺序：`data_layer 负载` → 加 `packet_layer` 时间戳 → 加密（尾部带 `iv_raw`）。
 pub struct PacketCodec {
     cipher: Cipher,
@@ -68,8 +70,22 @@ impl PacketCodec {
 
     /// 解密并拆包，返回 `packet_layer` 之后的数据。
     pub fn open(&self, datagram: &[u8]) -> Result<(u32, Vec<u8>), TransportError> {
+        let (timestamp, plain) = self.open_frame(datagram)?;
+        Ok((timestamp, plain[PacketLayer::HEADER_SIZE..].to_vec()))
+    }
+
+    /// 加密一个已经拼好包头的明文（FEC 包头由上层构造）。
+    pub fn seal_frame(&self, plain: &[u8]) -> Result<Vec<u8>, TransportError> {
+        Ok(self.cipher.encrypt(plain)?)
+    }
+
+    /// 解密并做时间窗校验，返回**完整明文**（含包头，供 FEC 层自行解析）。
+    ///
+    /// `packet_layer` 与 `packet_layer_data` / `packet_layer_fec` 的前 4 字节
+    /// 都是小端时间戳，因此这里用 `packet_layer` 解析时间戳对三种帧都成立。
+    pub fn open_frame(&self, datagram: &[u8]) -> Result<(u32, Vec<u8>), TransportError> {
         let plain = self.cipher.decrypt(datagram)?;
-        let (header, payload) = PacketLayer::decode(&plain)?;
+        let (header, _) = PacketLayer::decode(&plain)?;
 
         // 对应 C++ `calculate_difference<int64_t>((uint32_t)now, packet_timestamp)`
         let difference = now_seconds_u32().wrapping_sub(header.timestamp);
@@ -77,7 +93,7 @@ impl PacketCodec {
             return Err(TransportError::TimeGap);
         }
 
-        Ok((header.timestamp, payload.to_vec()))
+        Ok((header.timestamp, plain))
     }
 }
 
@@ -86,6 +102,74 @@ fn now_seconds_u32() -> u32 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs() as u32)
         .unwrap_or(0)
+}
+
+/// 解密后的帧类型。
+///
+/// - 未启用 FEC：`packet_layer` + KCP 段
+/// - 启用 FEC：原始包用 `packet_layer_data`，冗余包用 `packet_layer_fec`
+#[derive(Debug, Clone, Copy)]
+pub enum IncomingFrame<'a> {
+    /// 普通帧：负载即 KCP 段
+    Plain(&'a [u8]),
+    /// FEC 原始包（`sub_sn < k`）
+    FecOriginal {
+        sn: u32,
+        sub_sn: u8,
+        segment: &'a [u8],
+    },
+    /// FEC 冗余包（`sub_sn >= k`），`conv` 来自 FEC 头
+    FecRedundant {
+        sn: u32,
+        sub_sn: u8,
+        conv: u32,
+        share: &'a [u8],
+    },
+}
+
+impl IncomingFrame<'_> {
+    /// 该帧对应的 KCP conv（用于服务端路由）。
+    pub fn conv(&self) -> Option<u32> {
+        match self {
+            IncomingFrame::Plain(segment) | IncomingFrame::FecOriginal { segment, .. } => {
+                Kcp::peek_conv(segment)
+            }
+            IncomingFrame::FecRedundant { conv, .. } => Some(*conv),
+        }
+    }
+}
+
+/// 解析解密后的明文帧。
+///
+/// `fec_original` 为 `Some(k)` 表示启用了 FEC（`k` 是原始包数量）。
+pub fn parse_frame(
+    plain: &[u8],
+    fec_original: Option<usize>,
+) -> Result<IncomingFrame<'_>, TransportError> {
+    match fec_original {
+        None => {
+            let (_, payload) = PacketLayer::decode(plain)?;
+            Ok(IncomingFrame::Plain(payload))
+        }
+        Some(k) => {
+            let (header, payload) = PacketLayerData::decode(plain)?;
+            if (header.sub_sn as usize) < k {
+                Ok(IncomingFrame::FecOriginal {
+                    sn: header.sn,
+                    sub_sn: header.sub_sn,
+                    segment: payload,
+                })
+            } else {
+                let (header, share) = PacketLayerFec::decode(plain)?;
+                Ok(IncomingFrame::FecRedundant {
+                    sn: header.sn,
+                    sub_sn: header.sub_sn,
+                    conv: header.kcp_conv,
+                    share,
+                })
+            }
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -102,6 +186,10 @@ pub enum TransportError {
     Protocol(#[from] ProtocolError),
     #[error("时间戳超出允许范围")]
     TimeGap,
+    #[error("FEC 错误：{0}")]
+    Fec(#[from] kcptube_fec::FecError),
+    #[error("内部锁已中毒")]
+    LockPoisoned,
     #[error("功能尚未实现：{0}")]
     NotImplemented(&'static str),
 }

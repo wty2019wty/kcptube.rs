@@ -99,6 +99,7 @@ impl Client {
         let state = Arc::new(ClientState {
             settings: settings.clone(),
             codec: codec.clone(),
+            fec: fec_pair(&settings),
             counters: Arc::new(StatusCounters::default()),
             channels: Mutex::new(HashMap::new()),
             udp_relays: Mutex::new(HashMap::new()),
@@ -192,6 +193,8 @@ impl Client {
 struct ClientState {
     settings: Arc<UserSettings>,
     codec: Arc<PacketCodec>,
+    /// FEC 配置 `(k, r)`；未启用时为 `None`
+    fec: Option<(u8, u8)>,
     counters: Arc<StatusCounters>,
     /// 活跃的数据通道（conv + 通道，仅用于状态日志）
     channels: Mutex<HashMap<u64, (u32, Arc<KcpChannel>)>>,
@@ -541,11 +544,12 @@ async fn establish_channel(
         let socket = UdpEndpoint::bind(bind_addr).await?;
 
         let handshake = Arc::new(
-            KcpChannel::new(
+            KcpChannel::new_with_fec(
                 state.codec.clone(),
                 handshake_config(state.settings.kcp_mtu),
                 socket.clone(),
                 server_peer,
+                state.fec,
             )
             .await?,
         );
@@ -572,11 +576,12 @@ async fn establish_channel(
                 tracing::debug!("握手完成，conv={conv}");
 
                 let channel = Arc::new(
-                    KcpChannel::new(
+                    KcpChannel::new_with_fec(
                         state.codec.clone(),
                         data_config(&state.settings, conv),
                         socket.clone(),
                         server_peer,
+                        state.fec,
                     )
                     .await?,
                 );
@@ -756,6 +761,13 @@ async fn relay_tcp(
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     Ok(())
+}
+
+/// FEC 配置：只有 k 与 r 都大于 0 时才启用。
+fn fec_pair(settings: &UserSettings) -> Option<(u8, u8)> {
+    let original = settings.fec_original_packet_count;
+    let redundant = settings.fec_redundant_packet_count;
+    (original > 0 && redundant > 0).then_some((original, redundant))
 }
 
 fn handshake_config(mtu: i32) -> KcpConfig {

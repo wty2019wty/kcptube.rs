@@ -605,6 +605,7 @@ name = "kcptube-transport"
 version = "0.1.0"
 dependencies = [
  "kcptube-crypto",
+ "kcptube-fec",
  "kcptube-kcp",
  "kcptube-protocol",
  "socket2",

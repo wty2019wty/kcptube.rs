@@ -7,11 +7,13 @@
 //!
 //! 接收：UDP 数据报 → `PacketCodec::open`（解密 + 拆包 + 时间窗）→ `Kcp::input`
 
+use crate::fec::{FecReceiver, FecSender};
 use crate::udp::UdpEndpoint;
-use crate::{KcpEndpoint, PacketCodec, TransportError, now_secs};
+use crate::{IncomingFrame, KcpEndpoint, PacketCodec, TransportError, now_secs, parse_frame};
 use kcptube_kcp::{KcpConfig, KcpError};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
 /// 一条完整的 KCP 数据通道。
@@ -28,33 +30,85 @@ pub struct KcpChannel {
     output_bytes: Arc<AtomicU64>,
     /// 已交给 KCP 的负载字节数（用于状态日志的 `receive (inner)`）
     input_bytes: Arc<AtomicU64>,
+    /// FEC 接收侧；`None` 表示未启用
+    fec_receiver: Option<StdMutex<FecReceiver>>,
+    /// FEC 原始包数量（用于区分原始包与冗余包）
+    fec_original: Option<usize>,
 }
 
 impl KcpChannel {
-    /// 建立通道并注册 KCP 输出回调。
+    /// 建立通道并注册 KCP 输出回调（不启用 FEC）。
     pub async fn new(
         codec: Arc<PacketCodec>,
         config: KcpConfig,
         socket: UdpEndpoint,
         peer: SocketAddr,
     ) -> Result<Self, TransportError> {
+        Self::new_with_fec(codec, config, socket, peer, None).await
+    }
+
+    /// 建立通道；`fec` 为 `(原始包数 k, 冗余包数 r)`，`None` 表示关闭 FEC。
+    pub async fn new_with_fec(
+        codec: Arc<PacketCodec>,
+        config: KcpConfig,
+        socket: UdpEndpoint,
+        peer: SocketAddr,
+        fec: Option<(u8, u8)>,
+    ) -> Result<Self, TransportError> {
+        let conv = config.conv;
         let endpoint = Arc::new(KcpEndpoint::new(config, peer));
         let peer_cell = Arc::new(std::sync::Mutex::new(peer));
         let output_bytes = Arc::new(AtomicU64::new(0));
+
+        let fec_sender = match fec {
+            Some((original, redundant)) => FecSender::new(original, redundant, conv)?
+                .map(|sender| Arc::new(StdMutex::new(sender))),
+            None => None,
+        };
+        let fec_receiver = match fec {
+            Some((original, redundant)) => {
+                FecReceiver::new(original, redundant)?.map(StdMutex::new)
+            }
+            None => None,
+        };
+        let fec_original = fec.map(|(original, _)| original as usize);
 
         {
             let codec = codec.clone();
             let socket = socket.clone();
             let peer_cell = peer_cell.clone();
             let output_bytes = output_bytes.clone();
+            let fec_sender = fec_sender.clone();
             let mut kcp = endpoint.kcp.lock().await;
             kcp.set_output(Box::new(move |payload: &[u8]| {
                 let target = peer_cell.lock().map(|guard| *guard).unwrap_or(peer);
-                let datagram = codec.seal(payload).map_err(|_| KcpError::OutputFailed)?;
-                output_bytes.fetch_add(datagram.len() as u64, Ordering::Relaxed);
-                socket
-                    .try_send_to(&datagram, target)
-                    .map_err(|_| KcpError::OutputFailed)?;
+
+                let transmit = |datagram: Vec<u8>| -> Result<(), KcpError> {
+                    output_bytes.fetch_add(datagram.len() as u64, Ordering::Relaxed);
+                    socket
+                        .try_send_to(&datagram, target)
+                        .map(|_| ())
+                        .map_err(|_| KcpError::OutputFailed)
+                };
+
+                match &fec_sender {
+                    Some(sender) => {
+                        let (original, redundant) = sender
+                            .lock()
+                            .map_err(|_| KcpError::OutputFailed)?
+                            .wrap(payload);
+                        for frame in std::iter::once::<Vec<u8>>(original).chain(redundant) {
+                            let datagram = codec
+                                .seal_frame(&frame)
+                                .map_err(|_| KcpError::OutputFailed)?;
+                            transmit(datagram)?;
+                        }
+                    }
+                    None => {
+                        let datagram = codec.seal(payload).map_err(|_| KcpError::OutputFailed)?;
+                        transmit(datagram)?;
+                    }
+                }
                 Ok(())
             }));
         }
@@ -69,7 +123,14 @@ impl KcpChannel {
             keep_alive_response_time: AtomicI64::new(now),
             output_bytes,
             input_bytes: Arc::new(AtomicU64::new(0)),
+            fec_receiver,
+            fec_original,
         })
+    }
+
+    /// 是否启用了 FEC
+    pub fn fec_enabled(&self) -> bool {
+        self.fec_original.is_some()
     }
 
     pub fn peer(&self) -> SocketAddr {
@@ -108,8 +169,52 @@ impl KcpChannel {
 
     /// 处理一个收到的 UDP 数据报
     pub async fn process_datagram(&self, datagram: &[u8]) -> Result<(), TransportError> {
-        let (_, payload) = self.codec.open(datagram)?;
-        self.input_payload(&payload).await
+        let (_, plain) = self.codec.open_frame(datagram)?;
+        let frame = parse_frame(&plain, self.fec_original)?;
+        self.accept_frame(frame).await
+    }
+
+    /// 处理一个已解密、已解析的帧（服务端先按 conv 路由再调用）。
+    pub async fn accept_frame(&self, frame: IncomingFrame<'_>) -> Result<(), TransportError> {
+        match frame {
+            IncomingFrame::Plain(segment) => self.input_payload(segment).await,
+            IncomingFrame::FecOriginal {
+                sn,
+                sub_sn,
+                segment,
+            } => {
+                let recovered =
+                    self.push_fec(|receiver| receiver.push_original(sn, sub_sn, segment))?;
+                self.input_payload(segment).await?;
+                for segment in recovered {
+                    self.input_payload(&segment).await?;
+                }
+                Ok(())
+            }
+            IncomingFrame::FecRedundant {
+                sn, sub_sn, share, ..
+            } => {
+                let recovered =
+                    self.push_fec(|receiver| receiver.push_redundant(sn, sub_sn, share))?;
+                for segment in recovered {
+                    self.input_payload(&segment).await?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn push_fec(
+        &self,
+        action: impl FnOnce(&mut FecReceiver) -> Vec<Vec<u8>>,
+    ) -> Result<Vec<Vec<u8>>, TransportError> {
+        match &self.fec_receiver {
+            Some(receiver) => {
+                let mut receiver = receiver.lock().map_err(|_| TransportError::LockPoisoned)?;
+                Ok(action(&mut receiver))
+            }
+            None => Ok(Vec::new()),
+        }
     }
 
     /// 处理一个已经解密、拆包后的 KCP 负载

@@ -342,6 +342,7 @@ KCP 本体（ikcp）是标准大端格式。
 - [ ] **DDNS**：外部脚本回调（`update_ipv4` / `update_ipv6`）、`destination_dnstxt`
 - [ ] **带宽限制**：`inbound_bandwidth` / `outbound_bandwidth`
 - [x] **状态日志**：`log_path` 下的 status / messages 两个文件（ip 待 STUN）
+- [x] **FEC**：发送端打包 + 冗余，接收端缓存与恢复
 - [ ] **自定义 IP 映射**：`->` 语法（配置已解析，转发侧未接入）
 - [ ] `blast`、`udp_timeout` 等剩余参数
 

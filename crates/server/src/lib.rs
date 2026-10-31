@@ -6,7 +6,7 @@
 //! 空闲清理、保活与状态日志。端口跳跃、STUN、DDNS、FEC、mux 留到后续里程碑。
 
 use kcptube_config::UserSettings;
-use kcptube_kcp::{Kcp, KcpConfig, KcpError};
+use kcptube_kcp::{KcpConfig, KcpError};
 use kcptube_logging::{
     LOGGING_GAP_SECONDS, StatusCounters, print_message_to_file, print_status_to_file,
     time_string_with_brackets, to_speed_unit,
@@ -21,8 +21,8 @@ use kcptube_protocol::packet::{
     response_initialise_packet, unpack_inner,
 };
 use kcptube_transport::{
-    KcpChannel, MAX_INNER_MESSAGE, PacketCodec, TcpSession, TransportError, UdpEndpoint, now_ms,
-    now_secs, resolve_endpoint,
+    IncomingFrame, KcpChannel, MAX_INNER_MESSAGE, PacketCodec, TcpSession, TransportError,
+    UdpEndpoint, now_ms, now_secs, parse_frame, resolve_endpoint,
 };
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -108,6 +108,8 @@ impl Server {
             let state = Arc::new(SocketState {
                 settings: settings.clone(),
                 codec: codec.clone(),
+                fec: fec_pair(&settings),
+                fec_original: fec_pair(&settings).map(|(original, _)| original as usize),
                 handshakes: Mutex::new(HashMap::new()),
                 sessions: Mutex::new(HashMap::new()),
                 counters: Arc::new(StatusCounters::default()),
@@ -214,6 +216,10 @@ struct Destination {
 struct SocketState {
     settings: Arc<UserSettings>,
     codec: Arc<PacketCodec>,
+    /// FEC 配置 `(k, r)`；未启用时为 `None`
+    fec: Option<(u8, u8)>,
+    /// FEC 原始包数量，用于解析帧类型
+    fec_original: Option<usize>,
     handshakes: Mutex<HashMap<SocketAddr, Arc<HandshakeEntry>>>,
     sessions: Mutex<HashMap<u32, Arc<DataSession>>>,
     counters: Arc<StatusCounters>,
@@ -268,17 +274,18 @@ impl SocketState {
         peer: SocketAddr,
         datagram: &[u8],
     ) -> Result<(), ServerError> {
-        let (_, payload) = self.codec.open(datagram)?;
-        if payload.is_empty() {
+        let (_, plain) = self.codec.open_frame(datagram)?;
+        let frame = parse_frame(&plain, self.fec_original)?;
+        let Some(conv) = frame.conv() else {
             return Ok(());
-        }
+        };
         self.counters.add_ingress_raw(datagram.len());
-        self.counters.add_ingress_inner(payload.len());
+        self.counters.add_ingress_inner(plain.len());
 
-        match Kcp::peek_conv(&payload) {
-            Some(0) => self.handle_handshake(socket, peer, &payload).await,
-            Some(conv) => self.handle_data(conv, peer, &payload).await,
-            None => Ok(()),
+        if conv == 0 {
+            self.handle_handshake(socket, peer, frame).await
+        } else {
+            self.handle_data(conv, peer, frame).await
         }
     }
 
@@ -286,10 +293,10 @@ impl SocketState {
         &self,
         socket: &UdpEndpoint,
         peer: SocketAddr,
-        payload: &[u8],
+        frame: IncomingFrame<'_>,
     ) -> Result<(), ServerError> {
         let entry = self.handshake_entry(socket, peer).await?;
-        entry.channel.input_payload(payload).await?;
+        entry.channel.accept_frame(frame).await?;
 
         let mut buffer = vec![0u8; MAX_INNER_MESSAGE];
         loop {
@@ -331,11 +338,12 @@ impl SocketState {
         }
 
         let channel = Arc::new(
-            KcpChannel::new(
+            KcpChannel::new_with_fec(
                 self.codec.clone(),
                 handshake_config(self.settings.kcp_mtu),
                 socket.clone(),
                 peer,
+                self.fec,
             )
             .await?,
         );
@@ -493,11 +501,12 @@ impl SocketState {
     ) -> Result<(u32, Arc<KcpChannel>), ServerError> {
         let conv = self.allocate_conv().await;
         let channel = Arc::new(
-            KcpChannel::new(
+            KcpChannel::new_with_fec(
                 self.codec.clone(),
                 data_config(&self.settings, conv),
                 socket.clone(),
                 peer,
+                self.fec,
             )
             .await?,
         );
@@ -599,7 +608,7 @@ impl SocketState {
         &self,
         conv: u32,
         peer: SocketAddr,
-        payload: &[u8],
+        frame: IncomingFrame<'_>,
     ) -> Result<(), ServerError> {
         let session = {
             let sessions = self.sessions.lock().await;
@@ -610,8 +619,8 @@ impl SocketState {
         };
 
         session.channel.set_peer(peer);
-        session.channel.input_payload(payload).await?;
-        tracing::trace!("收到 conv={conv} 的 KCP 负载（{} 字节）", payload.len());
+        session.channel.accept_frame(frame).await?;
+        tracing::trace!("收到 conv={conv} 的数据帧");
         self.drain_data(&session).await;
         Ok(())
     }
@@ -924,6 +933,13 @@ fn data_config(settings: &UserSettings, conv: u32) -> KcpConfig {
         receive_window: settings.kcp_rcvwnd,
         stream_mode: false,
     }
+}
+
+/// FEC 配置：只有 k 与 r 都大于 0 时才启用。
+fn fec_pair(settings: &UserSettings) -> Option<(u8, u8)> {
+    let original = settings.fec_original_packet_count;
+    let redundant = settings.fec_redundant_packet_count;
+    (original > 0 && redundant > 0).then_some((original, redundant))
 }
 
 /// Windows 上 UDP 对端不可达会以「连接重置/中止」的形式返回（WSAECONNRESET）。

@@ -73,9 +73,17 @@ async fn echo_server() -> (u16, Vec<JoinHandle<()>>) {
 
 /// 启动一套 echo + 服务端 + 客户端，返回客户端本地端口与后台任务。
 async fn start_pair(keep_alive: u16) -> (u16, Vec<JoinHandle<()>>) {
+    start_pair_with(keep_alive, None).await
+}
+
+async fn start_pair_with(keep_alive: u16, fec: Option<(u8, u8)>) -> (u16, Vec<JoinHandle<()>>) {
     let (echo_port, echo_tasks) = echo_server().await;
     let server_port = free_udp_port();
     let client_port = free_tcp_port();
+
+    let fec_line = fec
+        .map(|(original, redundant)| format!("fec={original}:{redundant}\n"))
+        .unwrap_or_default();
 
     let server_settings = settings(&format!(
         "mode=server\n\
@@ -86,6 +94,7 @@ async fn start_pair(keep_alive: u16) -> (u16, Vec<JoinHandle<()>>) {
          encryption_password=test-password\n\
          encryption_algorithm=AES-GCM\n\
          kcp=regular3\n\
+         {fec_line}\
          keep_alive={keep_alive}\n"
     ));
     let client_settings = settings(&format!(
@@ -97,6 +106,7 @@ async fn start_pair(keep_alive: u16) -> (u16, Vec<JoinHandle<()>>) {
          encryption_password=test-password\n\
          encryption_algorithm=AES-GCM\n\
          kcp=regular3\n\
+         {fec_line}\
          keep_alive={keep_alive}\n"
     ));
 
@@ -182,6 +192,38 @@ async fn udp_roundtrip() {
 
     stop(tasks);
     result.expect("UDP 往返应在 15 秒内完成");
+}
+
+/// 大块数据往返（覆盖 KCP 分片/重组与 FEC 冗余）
+async fn bulk_roundtrip(port: u16, size: usize) {
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    let (mut reader, mut writer) = stream.split();
+    let payload: Vec<u8> = (0..size).map(|index| (index * 7 % 256) as u8).collect();
+    writer.write_all(&payload).await.unwrap();
+    let mut received = vec![0u8; payload.len()];
+    reader.read_exact(&mut received).await.unwrap();
+    assert_eq!(received, payload);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fec_tcp_roundtrip() {
+    // `fec=4:2`：每 4 个原始包附带 2 个冗余包
+    let (client_port, tasks) = start_pair_with(0, Some((4, 2))).await;
+    let result = tokio::time::timeout(Duration::from_secs(20), async {
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", client_port))
+            .await
+            .unwrap();
+        let (mut reader, mut writer) = stream.split();
+        exchange(&mut reader, &mut writer, "fec hello", 5).await;
+        // 32 KiB 会触发 KCP 分片，从而产生多组 FEC 冗余
+        bulk_roundtrip(client_port, 32 * 1024).await;
+    })
+    .await;
+
+    stop(tasks);
+    result.expect("FEC 模式下应在 20 秒内完成往返");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
