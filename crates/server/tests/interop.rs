@@ -8,21 +8,57 @@
 use kcptube_client::Client;
 use kcptube_config::UserSettings;
 use kcptube_server::Server;
+use std::collections::HashSet;
 use std::net::TcpListener as StdTcpListener;
 use std::net::UdpSocket as StdUdpSocket;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
-fn free_tcp_port() -> u16 {
-    let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap().port()
+/// 测试端口段。选在 10000–19999，避开 Linux / Windows 常见的临时端口段，
+/// 以免和测试内部 `bind(:0)` 得到的临时端口相撞。
+const PORT_RANGE_START: u16 = 10000;
+const PORT_RANGE_END: u16 = 20000;
+
+/// 进程内统一分配端口：保证不重复，并同时校验 TCP 与 UDP 都可用。
+///
+/// 客户端会在同一个端口上同时监听 TCP 和 UDP，因此仅检查其中一种协议
+/// 不足以保证不冲突。
+fn allocated_ports() -> &'static Mutex<HashSet<u16>> {
+    static PORTS: OnceLock<Mutex<HashSet<u16>>> = OnceLock::new();
+    PORTS.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
-fn free_udp_port() -> u16 {
-    let socket = StdUdpSocket::bind("127.0.0.1:0").unwrap();
-    socket.local_addr().unwrap().port()
+fn port_is_free(port: u16) -> bool {
+    match (
+        StdTcpListener::bind(("127.0.0.1", port)),
+        StdUdpSocket::bind(("127.0.0.1", port)),
+    ) {
+        (Ok(tcp), Ok(udp)) => {
+            drop(tcp);
+            drop(udp);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// 分配 `count` 个连续端口，返回起始端口。
+fn allocate_ports(count: u16) -> u16 {
+    assert!(count > 0, "至少分配一个端口");
+    let mut used = allocated_ports().lock().expect("端口分配器锁被污染");
+    let mut base = PORT_RANGE_START;
+    while u32::from(base) + u32::from(count) <= u32::from(PORT_RANGE_END) {
+        let end = base + count - 1;
+        if (base..=end).all(|port| !used.contains(&port) && port_is_free(port)) {
+            used.extend(base..=end);
+            return base;
+        }
+        base += 1;
+    }
+    panic!("在 {PORT_RANGE_START}-{PORT_RANGE_END} 内找不到 {count} 个连续空闲端口");
 }
 
 fn settings(text: &str) -> UserSettings {
@@ -31,8 +67,8 @@ fn settings(text: &str) -> UserSettings {
 }
 
 async fn echo_server() -> (u16, Vec<JoinHandle<()>>) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
+    let port = allocate_ports(1);
+    let listener = TcpListener::bind(("127.0.0.1", port)).await.unwrap();
     let tcp_handle = tokio::spawn(async move {
         loop {
             let Ok((mut stream, _)) = listener.accept().await else {
@@ -103,8 +139,8 @@ async fn start_pair_with_options(options: PairOptions) -> (u16, Vec<JoinHandle<(
         mux_tunnels,
     } = options;
     let (echo_port, echo_tasks) = echo_server().await;
-    let server_port = free_udp_port();
-    let client_port = free_tcp_port();
+    let server_port = allocate_ports(1);
+    let client_port = allocate_ports(1);
 
     let fec_line = fec
         .map(|(original, redundant)| format!("fec={original}:{redundant}\n"))
@@ -144,6 +180,10 @@ async fn start_pair_with_options(options: PairOptions) -> (u16, Vec<JoinHandle<(
     let server_task = tokio::spawn(async move {
         let _ = Server::new(server_settings).run().await;
     });
+    // 先等服务端完成 UDP 绑定，再启动客户端：mux 模式下客户端启动时就会
+    // 立即握手，若服务端尚未监听，Windows 会对 ICMP 端口不可达返回
+    // ConnectionRefused，导致客户端直接退出（C++ 版由定时器重试）。
+    tokio::time::sleep(Duration::from_millis(300)).await;
     let client_task = tokio::spawn(async move {
         let _ = Client::new(client_settings).run().await;
     });
@@ -306,36 +346,12 @@ async fn mux_tcp_and_udp_roundtrip() {
     result.expect("mux 模式应在 20 秒内完成 TCP/UDP 往返");
 }
 
-/// 找一段连续空闲的 UDP 端口（仅用于测试）。
-fn free_udp_range(count: u16) -> u16 {
-    for _ in 0..100 {
-        let base = 30000 + (rand::random::<u16>() % 20000);
-        let end = base + count;
-        let mut sockets = Vec::new();
-        let available =
-            (base..end).all(
-                |port| match std::net::UdpSocket::bind(("127.0.0.1", port)) {
-                    Ok(socket) => {
-                        sockets.push(socket);
-                        true
-                    }
-                    Err(_) => false,
-                },
-            );
-        drop(sockets);
-        if available {
-            return base;
-        }
-    }
-    panic!("找不到连续空闲的 UDP 端口");
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn port_hopping_keeps_connection() {
     let (echo_port, echo_tasks) = echo_server().await;
-    let base = free_udp_range(3);
+    let base = allocate_ports(3);
     let end = base + 2;
-    let client_port = free_tcp_port();
+    let client_port = allocate_ports(1);
     let log_dir = std::env::temp_dir().join(format!("kcptube-hop-{client_port}"));
     std::fs::create_dir_all(&log_dir).unwrap();
 
@@ -371,6 +387,8 @@ async fn port_hopping_keeps_connection() {
     let server_task = tokio::spawn(async move {
         let _ = Server::new(server_settings).run().await;
     });
+    // 同上：等服务端绑定端口范围后再启动客户端
+    tokio::time::sleep(Duration::from_millis(300)).await;
     let client_task = tokio::spawn(async move {
         let _ = Client::new(client_settings).run().await;
     });
@@ -430,4 +448,63 @@ async fn keep_alive_and_reconnect() {
 
     stop(tasks);
     result.expect("保活与重连应在 20 秒内完成");
+}
+
+/// Mux 客户端先于服务端启动时：客户端不应退出，本地连接应排队等待隧道就绪。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mux_client_queues_until_server_starts() {
+    let (echo_port, echo_tasks) = echo_server().await;
+    let server_port = allocate_ports(1);
+    let client_port = allocate_ports(1);
+
+    let server_settings = settings(&format!(
+        "mode=server\n\
+         listen_on=127.0.0.1\n\
+         listen_port={server_port}\n\
+         destination_address=127.0.0.1\n\
+         destination_port={echo_port}\n\
+         encryption_password=test-password\n\
+         encryption_algorithm=AES-GCM\n\
+         kcp=regular3\n"
+    ));
+    let client_settings = settings(&format!(
+        "mode=client\n\
+         listen_on=127.0.0.1\n\
+         listen_port={client_port}\n\
+         destination_address=127.0.0.1\n\
+         destination_port={server_port}\n\
+         encryption_password=test-password\n\
+         encryption_algorithm=AES-GCM\n\
+         kcp=regular3\n\
+         mux_tunnels=1\n"
+    ));
+
+    // 先启动客户端：此时服务端还不存在，客户端应保持监听并在后台重试建链
+    let client_task = tokio::spawn(async move {
+        let _ = Client::new(client_settings).run().await;
+    });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // 隧道尚未建立时建立本地连接并写入数据：连接应被排队保留，而不是直接丢弃
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", client_port))
+        .await
+        .unwrap();
+    stream.write_all(b"late-start").await.unwrap();
+
+    // 再启动服务端，客户端应自动重试建链并处理已排队的连接
+    let server_task = tokio::spawn(async move {
+        let _ = Server::new(server_settings).run().await;
+    });
+
+    let result = tokio::time::timeout(Duration::from_secs(30), async {
+        let mut buffer = vec![0u8; "late-start".len()];
+        stream.read_exact(&mut buffer).await.unwrap();
+        assert_eq!(&buffer, b"late-start");
+    })
+    .await;
+
+    let mut tasks = vec![client_task, server_task];
+    tasks.extend(echo_tasks);
+    stop(tasks);
+    result.expect("服务端后启动时，客户端应保留本地连接并在建链后完成转发");
 }

@@ -116,17 +116,18 @@ impl Client {
 
         let mux_mode = settings.mux_tunnels > 0;
 
-        // mux 模式：预先建立 `mux_tunnels` 条共享通道（对应 C++ `establish_mux_channels`）
-        if mux_mode {
-            for _ in 0..settings.mux_tunnels {
-                let (conv, channel) = establish_channel(&state, ProtocolType::Mux).await?;
-                let tunnel = state.spawn_mux_tunnel(conv, channel);
-                state.mux.lock().await.push(tunnel);
-                tracing::info!("mux 通道 conv={conv} 已建立");
-            }
-        }
-
         let mut tasks = JoinSet::new();
+
+        // mux 模式：在后台维持 `mux_tunnels` 条共享通道（对应 C++ `establish_mux_channels`）。
+        // 建链失败不会让客户端退出，而是持续重试；通道断开后也由该任务补建。
+        if mux_mode {
+            let mux_state = state.clone();
+            let target = settings.mux_tunnels as usize;
+            tasks.spawn(async move {
+                maintain_mux_tunnels(mux_state, target).await;
+                Ok::<(), ClientError>(())
+            });
+        }
 
         // 状态摘要任务：只有配置了 `log_status`（即设置了 `log_path`）时才启动，
         // 与 C++ `if (!current_settings.log_status.empty())` 一致
@@ -298,6 +299,8 @@ impl ClientState {
     }
 
     /// 建立一条 mux 隧道并启动收发任务。
+    ///
+    /// 通道断开后会从 `state.mux` 中移除，由 `maintain_mux_tunnels` 统一补建。
     fn spawn_mux_tunnel(self: &Arc<Self>, conv: u32, channel: Arc<KcpChannel>) -> Arc<MuxTunnel> {
         let (tunnel, mut commands, events) = MuxTunnel::new(channel, conv);
         let keep_alive = self.settings.keep_alive;
@@ -317,15 +320,6 @@ impl ClientState {
                 .lock()
                 .await
                 .retain(|item| !Arc::ptr_eq(item, &runner));
-
-            // 通道断开后补一条，保证本地连接始终有可用隧道
-            // （对应 C++ `process_disconnect` 里的 `establish_mux_channels(1)`）
-            if let Ok((new_conv, new_channel)) = establish_channel(&state, ProtocolType::Mux).await
-            {
-                let rebuilt = state.spawn_mux_tunnel(new_conv, new_channel);
-                state.mux.lock().await.push(rebuilt);
-                tracing::info!("mux 通道 conv={new_conv} 重建完成");
-            }
         });
 
         let events_tunnel = tunnel.clone();
@@ -651,12 +645,13 @@ async fn mux_accept_loop(
     loop {
         match listener.accept().await {
             Ok((session, peer)) => {
-                let Some(tunnel) = state.pick_mux_tunnel().await else {
-                    tracing::warn!("没有可用的 mux 通道，拒绝本地连接 {peer}");
-                    continue;
-                };
+                let state = state.clone();
+                // 隧道可能暂时不足（启动瞬间或全部断开）：让连接排队等待，
+                // 而不是立即关闭；等待超时后由 wait_mux_tunnel 关闭 session。
                 tokio::spawn(async move {
-                    mux_handle_tcp(tunnel, session).await;
+                    if let Some(tunnel) = wait_mux_tunnel(&state, peer).await {
+                        mux_handle_tcp(tunnel, session).await;
+                    }
                 });
             }
             Err(error) => {
@@ -664,6 +659,30 @@ async fn mux_accept_loop(
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }
+    }
+}
+
+/// 等待一条可用的 mux 隧道，最长 `HANDSHAKE_TIMEOUT` 秒。
+///
+/// 客户端会先监听、后建链，因此启动瞬间或所有通道暂时断开时，
+/// 本地连接应排队等待，而不是被直接关闭。
+async fn wait_mux_tunnel(state: &Arc<ClientState>, peer: SocketAddr) -> Option<Arc<MuxTunnel>> {
+    let deadline = Instant::now() + Duration::from_secs(HANDSHAKE_TIMEOUT as u64);
+    let mut logged = false;
+
+    loop {
+        if let Some(tunnel) = state.pick_mux_tunnel().await {
+            return Some(tunnel);
+        }
+        if Instant::now() >= deadline {
+            tracing::warn!("等待 mux 通道超时，关闭本地连接 {peer}");
+            return None;
+        }
+        if !logged {
+            tracing::info!("mux 通道尚未就绪，本地连接 {peer} 排队等待");
+            logged = true;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 
@@ -808,6 +827,43 @@ async fn mux_event_loop(tunnel: Arc<MuxTunnel>, mut events: mpsc::Receiver<MuxEv
         }
     }
     tunnel.clear_records();
+}
+
+/// 维持 `target` 条 mux 共享通道。
+///
+/// 与 C++ `establish_mux_channels` 一致，建链在后台异步进行：
+/// 服务端暂时不可达时保持重试，不会让客户端退出；任何通道断开后
+/// 也会由本任务补建。
+async fn maintain_mux_tunnels(state: Arc<ClientState>, target: usize) {
+    loop {
+        let missing = {
+            let mux = state.mux.lock().await;
+            target.saturating_sub(mux.len())
+        };
+
+        if missing == 0 {
+            // 数量正常时低频巡检，发现断开后在下一轮补建
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            continue;
+        }
+
+        match establish_channel(&state, ProtocolType::Mux).await {
+            Ok((conv, channel)) => {
+                let mut mux = state.mux.lock().await;
+                if mux.len() >= target {
+                    // 建链期间已有其它通道补位，丢弃本次多余链路
+                    continue;
+                }
+                let tunnel = state.spawn_mux_tunnel(conv, channel);
+                mux.push(tunnel);
+                tracing::info!("mux 通道 conv={conv} 已建立");
+            }
+            Err(error) => {
+                tracing::warn!("建立 mux 通道失败：{error}，2 秒后重试");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        }
+    }
 }
 
 /// 建立一条数据通道（含握手与 30 秒超时换端口重试）。

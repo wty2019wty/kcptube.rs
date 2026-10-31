@@ -13,7 +13,7 @@
 | C++ 参考实现 | 14,308 行（`legacy-cpp/`，含 ikcp 1,109 行） |
 | Rust 代码 | 约 9,919 行（22 个 `.rs` 文件，非空行） |
 | crate 数 | 11（10 个 lib + 1 个 bin） |
-| 单元/集成测试 | 96 个，全部通过 |
+| 单元/集成测试 | 97 个，全部通过 |
 | 整体完成度 | **M0~M3 完成，M4 约 85%** |
 
 ```
@@ -191,10 +191,11 @@ Rust 输出完全一致，见 `crates/fec/src/lib.rs::vectors_match_botan_zfec`�
   - `MuxTunnel::run` 独占一条 KCP 通道，负责收包、`update`、保活
   - 收到的 `mux_transfer` / `mux_cancel` / `pre_connect_custom_address` 经事件队列交给上层
   - 上层发送经有界命令队列串行化，队满即背压（替代 C++ 的 `deque` + `pause()`）
-- [x] **client**：`mux_tunnels` 条共享通道预先建立，本地连接按 `connection_id` 复用
+- [x] **client**：后台任务维持 `mux_tunnels` 条共享通道，建链失败自动重试，本地连接按 `connection_id` 复用
 - [x] **client**：TCP 接入不再新建 KCP 通道，改为分配 `connection_id` 并复用隧道
 - [x] **client**：UDP 按本地源地址建立/复用记录，回包直接发回该地址
-- [x] **client**：通道断开后自动从隧道池移除并重建一条（对齐 `establish_mux_channels(1)`）
+- [x] **client**：通道断开后从隧道池移除，由维护任务自动补建（对齐 `establish_mux_channels`）
+- [x] **client**：没有可用隧道时本地 TCP 连接排队等待（最长 `HANDSHAKE_TIMEOUT` 30 秒），不再立即丢弃
 - [x] **server**：握手 `protocol_type::mux` 建立 mux 会话，KCP 由隧道独占驱动
 - [x] **server**：`mux_transfer` 首次到达时按 `destination_address` 连目标（TCP）或建 UDP 套接字
 - [x] **server**：目标侧断开 → `mux_cancel`；收到 `mux_cancel` → 关闭本地连接
@@ -246,16 +247,16 @@ Rust 输出完全一致，见 `crates/fec/src/lib.rs::vectors_match_botan_zfec`�
 | `transport` | 24 | 调度器、加密包层、UDP/TCP 封装、双通道 UDP 端到端、FEC 编解码/恢复/清理、mux 记录表、socket 重绑、blast、带宽、地址族解析 |
 | `logging` | 4 | `to_speed_unit` 分档、空路径、追加/覆盖写 |
 | `server` | 2 | 端口连续性、超时常量与 C++ 对齐 |
-| `server`（集成） | 6 | `interop.rs`：TCP 往返、UDP 往返、FEC 往返、mux 往返、端口跳跃、保活/重连 |
+| `server`（集成） | 7 | `interop.rs`：TCP 往返、UDP 往返、FEC 往返、mux 往返、mux 启动重试、端口跳跃、保活/重连 |
 | `client` | 1 | 握手超时常量与 C++ 对齐 |
-| **合计** | **96** | 全部通过 |
+| **合计** | **97** | 全部通过 |
 
 命令与结果：
 
 ```
 cargo fmt --all -- --check        → 0
 cargo clippy --workspace --all-targets -- -D warnings → 0
-cargo test --workspace            → 96 passed, 0 failed
+cargo test --workspace            → 97 passed, 0 failed
 cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 ```
 
@@ -323,6 +324,8 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 | 2026-10-31 | 版本号统一：启动横幅、usage 与 `--version` 全部使用根 `Cargo.toml` 的 `version`（`0.1.0`），删除 `APP_VERSION` 常量，程序只对外自报一个版本号；横幅不再与 C++ 版逐字一致，协议兼容目标仍记录在 `docs/migration-plan.md`；已知问题 #10 关闭 |
 | 2026-10-31 | docs: 新增使用文档全套（`docs/README.md` 索引、`parameters.md` 参数手册、`client-server.md`、`relay-mode.md`、`fec.md`、`mtu.md`、`custom-ip-mappings.md`、`specific-examples.md`），参照 `legacy-cpp/docs/` 篇目结构、基于 Rust 代码实际行为编写；校准 KCP 预设值（fast1/fast2 `kcp_interval=0`）、`kcp_mtu` 默认值（1418/1405）、带宽后缀与 `/8` 换算怪癖、`{}` 忽略语法、relay 段继承规则等与 C++ 对齐的细节；对 `--try`、relay 运行期、`[custom_input*]` 转发、STUN/DDNS、`fib_*` 等未实现项逐一标注；根 `README.md` 文档导航同步更新 |
 | 2026-10-31 | docs: 按代码行为校正文档与注释：`mtu` 优先于 `kcp_mtu`、`listen_on` 仅接受 IP、多配置文件为顺序启动（登记已知问题 #13）、默认仅监听 IPv4（#12）、`ip_address.log` 尚未接入、端口范围含两端；修正 `cipher.rs` 校验字节序注释与过时提示文案；非空行数更新为 9,919 |
+| 2026-10-31 | test: 稳定 interop 测试：端口改为进程内统一分配（同一端口同时校验 TCP/UDP、避开常见临时端口段，覆盖 echo/server/client/端口跳跃范围），并让服务端先于客户端启动，消除 mux 启动握手与 UDP 端口尚未监听的竞态；连续 50 次运行 0 失败 |
+| 2026-10-31 | fix: mux 通道改为后台维护（`maintain_mux_tunnels`）：建链失败不再让 `Client::run` 退出，而是 2 秒后重试；通道断开后由该任务统一补建，行为对齐 C++ `establish_mux_channels`；无可用隧道时本地 TCP 连接排队等待（最长 30 秒）；新增 `interop.rs::mux_client_queues_until_server_starts` 回归测试；测试增至 97 |
 
 ---
 
