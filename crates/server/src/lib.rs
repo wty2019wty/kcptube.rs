@@ -5,8 +5,6 @@
 //! - 目标地址转发（TCP/UDP）、mux 会话表
 //! - STUN 打洞（NAT 全锥型）
 //! - DDNS 变更检测与外部脚本回调（`update_ipv4` / `update_ipv6`）
-//!
-//! 骨架阶段仅固定入口。
 
 use kcptube_config::UserSettings;
 use thiserror::Error;

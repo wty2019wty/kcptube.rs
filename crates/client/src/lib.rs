@@ -5,8 +5,6 @@
 //! - 与远端完成握手（`initialise` / `keep_alive` / `raw_data`）
 //! - 端口跳跃（`dport_refresh` + `test_connection` 探测）
 //! - mux 多路复用、限速、状态日志
-//!
-//! 骨架阶段仅固定入口。
 
 use kcptube_config::UserSettings;
 use thiserror::Error;

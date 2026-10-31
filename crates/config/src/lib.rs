@@ -19,10 +19,6 @@
 //! ```
 //!
 //! `kcp` 的取值预设：`regular1`~`regular5`、`fast1`~`fast6`、`manual`。
-//!
-//! ## 骨架状态
-//!
-//! 结构体字段已按 C++ 版对齐，解析器在里程碑 1 实现。
 
 use kcptube_crypto::EncryptionMode;
 use std::collections::HashMap;

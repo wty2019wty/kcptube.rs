@@ -33,10 +33,7 @@ pub enum CryptoError {
 
 /// 直接对原始数据做一次 AEAD 加密（不追加 iv_raw），主要用于测试与内部复用。
 ///
-/// 参数中的 `iv` 长度必须与模式匹配：
-/// - `aes-gcm`: 16
-/// - `aes-ocb`: 12
-/// - `xchacha20`: 24
+/// 参数中的 `iv` 长度必须与模式匹配（见 `EncryptionMode::iv_len`）。
 pub fn aead_encrypt_raw(
     mode: EncryptionMode,
     key: &[u8; 32],

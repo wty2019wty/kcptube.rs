@@ -2,8 +2,6 @@
 //!
 //! relay 由「入口（ingress）」与「出口（egress）」两段配置组成，
 //! 用于在没有公网 IP 的场景下中转流量。
-//!
-//! 骨架阶段仅固定入口。
 
 use kcptube_config::UserSettings;
 use thiserror::Error;

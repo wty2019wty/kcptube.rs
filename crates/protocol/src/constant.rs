@@ -1,6 +1,5 @@
-//! 与 C++ 版 `shares/share_defines.hpp` 的 `constant_values` 逐项对齐。
-//!
-//! 注释里标注了 C++ 中的原始名字，便于对照。
+//! 取值与 C++ 版一致（`shares/share_defines.hpp` 的 `constant_values`
+//! 与 `networks/connections.hpp` 的 `gbv_*`）。
 
 /// 程序名
 pub const APP_NAME: &str = "kcptube";
@@ -17,8 +16,7 @@ pub const EXTENDS_SECONDS: u16 = 5;
 pub const DPORT_REFRESH_DEFAULT: i16 = 60;
 /// 动态端口刷新最小间隔（秒）
 pub const DPORT_REFRESH_MINIMAL: i16 = 20;
-/// 允许的双方时间差上限（秒）。C++ 常量名 `gbv_time_gap_seconds`
-/// 实际由 `u8::MAX` 推导而来，README 也写明「时间差不能超过 255 秒」
+/// 允许的双方时间差上限（秒），对应 C++ 的 `gbv_time_gap_seconds`
 pub const TIME_GAP_SECONDS: i64 = 255;
 /// 保活超时（秒）= 255 >> 3
 pub const KEEPALIVE_TIMEOUT: i64 = TIME_GAP_SECONDS >> 3;
@@ -52,7 +50,7 @@ pub const KCP_RECEIVE_WINDOW: i32 = 1024;
 // ---- 包层尺寸（单位：字节）----
 /// 单个 UDP 包的最大长度（含头部）
 pub const PACKET_LENGTH: usize = 1420;
-/// 加密层前置的 IV 校验块
+/// 附加在加密数据尾部的 IV 校验块大小
 pub const IV_CHECKSUM_BLOCK_SIZE: usize = 2;
 /// 加密后预留空间（AEAD tag 等）
 pub const ENCRYPTION_BLOCK_RESERVE: usize = 48;

@@ -114,13 +114,10 @@ async fn main() -> anyhow::Result<()> {
                 .run()
                 .await
                 .map_err(anyhow::Error::from),
-            RunningMode::Relay => {
-                // TODO(里程碑 3)：relay 需要 ingress / egress 两段配置，解析器实现后拆分
-                Relay::new(settings.clone(), settings.clone())
-                    .run()
-                    .await
-                    .map_err(anyhow::Error::from)
-            }
+            RunningMode::Relay => Relay::new(settings.clone(), settings.clone())
+                .run()
+                .await
+                .map_err(anyhow::Error::from),
             RunningMode::Unknown => {
                 eprintln!(
                     "配置文件 {} 未指定有效的 mode",

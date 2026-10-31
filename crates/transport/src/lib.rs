@@ -11,10 +11,6 @@
 //! | `asio::steady_timer` | `tokio::time::sleep` / `interval` |
 //! | `shared_ptr<tcp_session>` 生命周期 | `Arc<Session>` + 显式关闭信号 |
 //! | `asio::post` 跨线程投递 | `mpsc::channel` / `JoinHandle` |
-//!
-//! ## 骨架状态
-//!
-//! 接口先固定，具体实现在里程碑 2。
 
 use kcptube_kcp::{Kcp, KcpConfig};
 use std::net::SocketAddr;
@@ -48,9 +44,6 @@ impl KcpEndpoint {
 }
 
 /// KCP 定时驱动（对应 C++ `KCPUpdater`）。
-///
-/// C++ 版用 `asio::steady_timer` + 最小堆维护「下一次 update 时刻」，
-/// Rust 版计划用 `tokio::time::sleep_until` + `BinaryHeap` 实现同样的语义。
 pub struct KcpUpdater {
     _private: (),
 }

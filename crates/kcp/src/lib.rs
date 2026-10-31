@@ -13,10 +13,6 @@
 //! 线格式仍是标准 ikcp（conv/cmd/frg/wnd/ts/sn/una/len 大端），因此
 //! **可以**用现成 crate；但为了与 C++ 版的拥塞/重传行为保持一致，
 //! 建议逐行移植这 1100 行（纯逻辑、无平台依赖）。
-//!
-//! ## 骨架状态
-//!
-//! 这里先固定对外接口与配置项，实现在里程碑 1 完成。
 
 use thiserror::Error;
 
@@ -65,13 +61,13 @@ impl Default for KcpConfig {
     }
 }
 
-/// 默认 KCP MTU（与 C++ `kcp_mtu_with_fec` 对齐，见 kcptube-protocol）
+/// 默认 KCP MTU（对应 C++ 的 `kcp_mtu_with_fec`）
 pub const MTU_WITH_FEC_DEFAULT: usize = 1405;
 
 /// KCP 输出回调：底层发送一个 UDP 负载
 pub type OutputFn = Box<dyn Fn(&[u8]) -> Result<(), KcpError> + Send + Sync>;
 
-/// KCP 会话（骨架）
+/// KCP 会话
 pub struct Kcp {
     config: KcpConfig,
     output: Option<OutputFn>,
@@ -109,9 +105,7 @@ impl Kcp {
     }
 
     /// 定时驱动（对应 `ikcp_update`）
-    pub fn update(&mut self, _now_ms: u32) {
-        // 待实现
-    }
+    pub fn update(&mut self, _now_ms: u32) {}
 
     /// 下次需要驱动的时刻（对应 `ikcp_check`）
     pub fn check(&self, now_ms: u32) -> u32 {

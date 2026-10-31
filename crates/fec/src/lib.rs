@@ -8,12 +8,6 @@
 //! 1. 先把 k 个数据包用 `fec_container`（2 字节长度前缀）拼接成一块；
 //! 2. 编码后**只发送冗余 share**（原始 share 已各自单独发出）；
 //! 3. 冗余包额外附带 `packet_layer_fec` 头（含 sn / sub_sn / kcp_conv）。
-//!
-//! ## 待办（里程碑 1）
-//!
-//! - 选定实现：`zfec-rs 0.1`（下载量低，需审计）或自实现 Vandermonde GF(256)（约 200 行）
-//! - **必须**先与 C++ 版做 bit 级交叉验证：同样的 k/n 与输入，share 必须完全一致
-//! - ZFEC 的每个 share 带 4 字节大端 share id 前缀，Rust 实现必须保留
 
 use thiserror::Error;
 
@@ -52,8 +46,6 @@ impl FecConfig {
 }
 
 /// ZFEC 编解码器。
-///
-/// 骨架阶段只固定了接口与参数校验，编码/解码待里程碑 1 实现。
 #[derive(Debug)]
 pub struct Zfec {
     config: FecConfig,

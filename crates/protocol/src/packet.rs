@@ -99,7 +99,7 @@ impl DataLayer {
     }
 }
 
-// ---- 包层头部（仅描述，实际编码见后续里程碑）----
+// ---- 包层头部 ----
 
 /// `packet_layer`：timestamp(u32 LE) + data
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

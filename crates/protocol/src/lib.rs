@@ -9,7 +9,7 @@
 //!
 //! ```text
 //! UDP datagram
-//!   └─ 加密层（2 字节 IV 校验 + AEAD）
+//!   └─ 加密层：AEAD 密文 + 2 字节 iv_raw
 //!        └─ 包层：packet_layer{ timestamp, data }            (4 字节头)
 //!             ├─ FEC 冗余包：packet_layer_fec                  (13 字节头)
 //!             ├─ FEC 原始包：packet_layer_data                 (9 字节头)
