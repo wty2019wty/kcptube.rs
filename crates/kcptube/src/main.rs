@@ -68,11 +68,26 @@ fn print_usage() {
 }
 
 fn init_logging() {
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(false)
+    use tracing::level_filters::LevelFilter;
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::filter::Targets;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    // 用 `Targets` 解析 `RUST_LOG`（`info`、`kcptube_transport=debug` 等），
+    // 只依赖级别匹配，不引入 `env-filter` 特性及其 regex 依赖。
+    let targets = std::env::var("RUST_LOG")
+        .ok()
+        .and_then(|raw| raw.parse::<Targets>().ok())
+        .unwrap_or_default()
+        .with_default(LevelFilter::INFO);
+
+    let _ = tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_target(false)
+                .with_filter(targets),
+        )
         .try_init();
 }
 

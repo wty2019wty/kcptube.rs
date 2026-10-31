@@ -335,6 +335,7 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 | 2026-11-01 | fix: 握手阶段忽略底层 recv 错误（ICMP 端口不可达导致的 `WSAECONNRESET` / `ConnectionRefused`），对齐 C++ `udp_client::handle_receive` 的「出错即重新挂起接收」；此前客户端会立即放弃本地连接，服务端晚启动或防火墙回 ICMP 时表现为「连不上」 |
 | 2026-11-01 | fix: 域名解析保留**全部**候选地址（`resolve_endpoints_filtered`），握手与端口跳跃逐个尝试；此前只取 `lookup_host` 的第一个结果，DDNS/`localhost` 解析到 IPv6 而服务端只监听 IPv4 时会一直超时 |
 | 2026-11-01 | fix: 未指定 `ipv4_only` / `ipv6_only` 时监听地址改为 `[::]` 双栈（与 C++ `udp_server::initialise` 一致，仅 `ipv6_only` 才置 `IPV6_V6ONLY`），修复默认无法被 IPv6 / `localhost(::1)` 访问的问题；已知问题 #12 关闭 |
+| 2026-11-01 | chore: 发布产物体积优化 —— release 打开 `strip`/fat LTO、`opt-level = "s"`（加密/KCP/转发/校验和热点仍为 `-O3`）、`tokio` 由 `full` 收窄到实际特性、`clap` 去掉彩色与拼写建议、`tracing-subscriber` 用 `Targets` 取代 `env-filter`（省掉 regex）；Windows GNU 产物体积 2.78 MB → 1.26 MB（约 -55%），musl 静态产物 2.41 MB → 1.44 MB（约 -40%） |
 
 ---
 
