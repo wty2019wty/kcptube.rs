@@ -1097,6 +1097,16 @@ impl Kcp {
         Ok(())
     }
 
+    /// 若尚未执行过第一次 `update`，先初始化内部时间基准。
+    ///
+    /// `flush` 在 `updated == 0` 时会直接返回，因此上层若要在首次
+    /// `update` 之前主动 flush（`blast` 模式），需要先调用本方法。
+    pub fn ensure_started(&mut self, current: u32) {
+        if self.updated == 0 {
+            self.update(current);
+        }
+    }
+
     /// 定时驱动（对应 `ikcp_update`），返回 slap
     pub fn update(&mut self, current: u32) -> i32 {
         self.current = current;

@@ -5,6 +5,7 @@
 //! C++ 版在 `tcp_session` 里同时管理读缓冲、写队列与超时回调；
 //! Rust 版先用 tokio 的异步读写表达背压，超时与断开处理交给上层模式。
 
+use socket2::{Domain, Protocol, Socket, Type};
 use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{
@@ -70,6 +71,23 @@ pub struct TcpListenerSession {
 
 impl TcpListenerSession {
     pub async fn bind(addr: SocketAddr) -> std::io::Result<Self> {
+        Self::bind_with(addr, None).await
+    }
+
+    /// 绑定监听地址；`only_v6` 仅在 IPv6 地址上生效（对应 `ipv6_only`）。
+    pub async fn bind_with(addr: SocketAddr, only_v6: Option<bool>) -> std::io::Result<Self> {
+        if addr.is_ipv6() && only_v6.is_some() {
+            let socket = Socket::new(Domain::for_address(addr), Type::STREAM, Some(Protocol::TCP))?;
+            socket.set_only_v6(only_v6 == Some(true))?;
+            socket.set_nonblocking(true)?;
+            socket.bind(&addr.into())?;
+            socket.listen(1024)?;
+            let listener: std::net::TcpListener = socket.into();
+            listener.set_nonblocking(true)?;
+            return Ok(Self {
+                listener: TcpListener::from_std(listener)?,
+            });
+        }
         Ok(Self {
             listener: TcpListener::bind(addr).await?,
         })

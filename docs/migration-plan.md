@@ -62,7 +62,7 @@
 |---|---:|---|---|---|---|
 | `modes/client.cpp` | 1917 | 客户端主逻辑：监听、握手、端口跳跃、状态日志 | `kcptube-client` | 高 | M3/M4 |
 | `modes/relay.cpp` | 1802 | 中继：ingress/egress 双段 | `kcptube-relay` | 高 | M5 |
-| `modes/server.cpp` | 1323 | 服务端：握手、转发、STUN、DDNS | `kcptube-server` | 高 | M3/M4 |
+| `modes/server.cpp` | 1323 | 服务端：握手、转发、STUN、DDNS | `kcptube-server` | 高 | M3/M4/M6 |
 | `networks/connections.cpp` | 1294 | asio 会话封装、包编解码、字节序 | `kcptube-protocol` + `kcptube-transport` | 中 | M1/M2 |
 | `shares/configurations.cpp` | 1010 | `.conf` 解析、参数校验、预设展开 | `kcptube-config` | 中 | M1 |
 | `networks/mux_tunnel.cpp` | 660 | mux 多路复用、缓存队列 | `kcptube-transport` | 高 | M4 |
@@ -71,9 +71,9 @@
 | `shares/aead.hpp` | 471 | 4 种 AEAD 实现、IV 派生 | `kcptube-crypto` | 中 | M1 |
 | `modes/tester.cpp` | 392 | `--try` 连通性测试 | `kcptube-tester`（待建） | 中 | M5 |
 | `networks/kcp.cpp` | 292 | ikcp 的 C++ 包装 | `kcptube-kcp` | 低 | M2 |
-| `networks/dns_helper.cpp` | 288 | DNS TXT 查询（Windows DnsQuery / resolv） | `kcptube-transport` | 中 | M4 |
+| `networks/dns_helper.cpp` | 288 | DNS TXT 查询（Windows DnsQuery / resolv） | `kcptube-transport` | 中 | M6 |
 | `shares/share_defines.cpp` | 237 | 参数工具、日志、ZFEC 初始化 | `kcptube-config` / `kcptube-logging` / `kcptube-fec` | 低 | M1 |
-| `networks/stun.cpp` | 118 | STUN 打洞（RFC3489/8489） | `kcptube-transport` | 中 | M4 |
+| `networks/stun.cpp` | 118 | STUN 打洞（RFC3489/8489） | `kcptube-transport` | 中 | M6 |
 | `networks/kcp_updater.cpp` | 117 | KCP 定时驱动线程 | `kcptube-transport` | 中 | M2 |
 | `3rd_party/ikcp.cpp` | 1109 | KCP 协议（cnbatch 改版） | `kcptube-kcp` | 中 | M2 |
 | `3rd_party/task_thread_pool.hpp` | 433 | 线程池 | 由 tokio 取代 | 低 | M2 |
@@ -318,7 +318,7 @@ KCP 本体（ikcp）是标准大端格式。
 - [x] **client/server**：会话回收（握手通道 4 秒、关闭后 31 秒冲刷、空闲 255 秒强制关闭）
 - [x] **client**：握手 30 秒超时后换新本地端口重试
 - [x] 加密全流程（默认 `aes-gcm`）
-- [x] 日志：`crates/logging` 对齐 messages / status（`ip_address.log` 依赖 STUN，随 M4）
+- [x] 日志：`crates/logging` 对齐 messages / status（`ip_address.log` 依赖 STUN，随 M6）
 - [x] 互通测试：C++ 服务端 + Rust 客户端、Rust 服务端 + C++ 客户端、Rust↔Rust 自动化
 
 验收：
@@ -329,7 +329,7 @@ KCP 本体（ikcp）是标准大端格式。
 
 ---
 
-### M4 完整客户端/服务端（约 14~18 人日，进行中）
+### M4 完整客户端/服务端（约 14~18 人日，接近完成）
 
 目标：把「能用」变成「和 C++ 版一样好用」。
 
@@ -338,20 +338,20 @@ KCP 本体（ikcp）是标准大端格式。
 - [x] **UDP 转发**（`udp_timeout`、按本地源地址的 UDP 映射表）
 - [x] **mux**：`mux_tunnels`、`mux_transfer` / `mux_cancel` / `pre_connect_custom_address`（发送侧待 `ignore_destination_*` 接入）
 - [x] **mux**：缓存队列与背压（有界 `mpsc` 替代 `mux_tcp_cache` / `mux_udp_cache` 的 `deque` + `pause()`）
-- [ ] **端口跳跃**：`dport_refresh`、`test_connection`、socket 切换、旧 forwarder 延迟回收
-- [ ] **STUN**：服务端打洞，IPv4/IPv6
-- [ ] **DDNS**：外部脚本回调（`update_ipv4` / `update_ipv6`）、`destination_dnstxt`
-- [ ] **带宽限制**：`inbound_bandwidth` / `outbound_bandwidth`
-- [x] **状态日志**：`log_path` 下的 status / messages 两个文件（ip 待 STUN）
+- [x] **端口跳跃**：`dport_refresh`、`test_connection`、socket 切换、旧 socket 延迟回收；服务端监听完整端口范围并共享会话表（Rust ↔ Rust 已自动化，C++ 互通待补测）
+- [x] **带宽限制**：`inbound_bandwidth` / `outbound_bandwidth` 接入 `Kcp::set_bandwidth` 与 `ResetWindowValues`
+- [x] **`blast`**：发送后按配置立即 flush（对应 C++ `Refresh()`）
+- [x] **`ipv4_only` / `ipv6_only`**：监听地址族与目标解析按配置生效
+- [x] **目标选择**：客户端每次连接随机选择 `destination_address` / `destination_port`；只监听首个 `listen_port`（与 C++ 一致）
+- [x] **状态日志**：`log_path` 下的 status / messages 两个文件（ip 待 M6）
 - [x] **FEC**：发送端打包 + 冗余，接收端缓存与恢复
-- [ ] **自定义 IP 映射**：`->` 语法（配置已解析，转发侧未接入）
-- [ ] `blast`、`udp_timeout` 等剩余参数
+- [ ] **自定义 IP 映射**：`->` 语法与 `[custom_input*]` 转发接入
 
 验收：
 
 - mux 下 100 并发 TCP 连接稳定
 - 端口跳跃切换期间连接不断
-- STUN 成功获取公网地址并写入回调脚本
+- 带宽、`blast`、`ipv4_only` / `ipv6_only` 行为与 C++ 一致
 
 ---
 
@@ -361,8 +361,7 @@ KCP 本体（ikcp）是标准大端格式。
 
 - [ ] **relay**：`[listener]` / `[forwarder]` 双段配置与转发
 - [ ] **tester**：`--try` 连通性测试（延时、丢包统计与输出格式）
-- [ ] **平台**：Windows `DnsQuery_W`（`--features windows-dns`）
-- [ ] **平台**：FreeBSD `SO_SETFIB`、`resolv`（DNS TXT）
+- [ ] **平台**：FreeBSD `SO_SETFIB`
 - [ ] **平台**：Linux 构建与静态链接
 - [ ] **性能**：基准测试（吞吐、P99 延迟、内存），与 C++ 版对比
 - [ ] **性能**：必要优化（零拷贝、批量收发、`SO_REUSEPORT`）
@@ -374,7 +373,27 @@ KCP 本体（ikcp）是标准大端格式。
 - 性能达到 C++ 版的 80% 以上（延迟不劣化）
 - 至少 Windows + Linux 双平台 CI 绿
 
+---
 
+### M6 STUN / DDNS（约 2~3 人日）
+
+目标：完成服务端公网地址探测与动态 DNS 回调，依赖公网环境验收。
+
+任务：
+
+- [ ] **STUN**：服务端打洞，IPv4 / IPv6（`stun_server`）
+- [ ] **DDNS**：外部脚本回调（`update_ipv4` / `update_ipv6`）、`destination_dnstxt`
+- [ ] **平台**：Windows `DnsQuery_W`（`--features windows-dns`）、FreeBSD `resolv`（DNS TXT）
+- [ ] **`ip_address.log`**：公网地址变化时写入
+- [ ] 与 C++ 版在同一公网环境下的行为对照
+
+验收：
+
+- STUN 成功获取公网地址并写入回调脚本
+- 公网 IP 变化时 `update_ipv4` / `update_ipv6` 被正确触发
+- `ip_address.log` 内容格式与 C++ 一致
+
+---
 
 ## 7. 兼容性验证方案
 

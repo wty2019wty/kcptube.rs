@@ -306,6 +306,100 @@ async fn mux_tcp_and_udp_roundtrip() {
     result.expect("mux 模式应在 20 秒内完成 TCP/UDP 往返");
 }
 
+/// 找一段连续空闲的 UDP 端口（仅用于测试）。
+fn free_udp_range(count: u16) -> u16 {
+    for _ in 0..100 {
+        let base = 30000 + (rand::random::<u16>() % 20000);
+        let end = base + count;
+        let mut sockets = Vec::new();
+        let available =
+            (base..end).all(
+                |port| match std::net::UdpSocket::bind(("127.0.0.1", port)) {
+                    Ok(socket) => {
+                        sockets.push(socket);
+                        true
+                    }
+                    Err(_) => false,
+                },
+            );
+        drop(sockets);
+        if available {
+            return base;
+        }
+    }
+    panic!("找不到连续空闲的 UDP 端口");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn port_hopping_keeps_connection() {
+    let (echo_port, echo_tasks) = echo_server().await;
+    let base = free_udp_range(3);
+    let end = base + 2;
+    let client_port = free_tcp_port();
+    let log_dir = std::env::temp_dir().join(format!("kcptube-hop-{client_port}"));
+    std::fs::create_dir_all(&log_dir).unwrap();
+
+    let mut server_settings = settings(&format!(
+        "mode=server\n\
+         listen_on=127.0.0.1\n\
+         listen_port={base}-{end}\n\
+         destination_address=127.0.0.1\n\
+         destination_port={echo_port}\n\
+         encryption_password=test-password\n\
+         encryption_algorithm=AES-GCM\n\
+         kcp=regular3\n\
+         keep_alive=1\n"
+    ));
+    let mut client_settings = settings(&format!(
+        "mode=client\n\
+         listen_on=127.0.0.1\n\
+         listen_port={client_port}\n\
+         destination_address=127.0.0.1\n\
+         destination_port={base}-{end}\n\
+         encryption_password=test-password\n\
+         encryption_algorithm=AES-GCM\n\
+         kcp=regular3\n\
+         dport_refresh=1\n\
+         log_path={}\n\
+         keep_alive=1\n",
+        log_dir.display()
+    ));
+    // 绕过解析器的 20 秒下限，测试中每 1 秒跳跃一次
+    server_settings.dynamic_port_refresh = 1;
+    client_settings.dynamic_port_refresh = 1;
+
+    let server_task = tokio::spawn(async move {
+        let _ = Server::new(server_settings).run().await;
+    });
+    let client_task = tokio::spawn(async move {
+        let _ = Client::new(client_settings).run().await;
+    });
+    tokio::time::sleep(Duration::from_millis(600)).await;
+
+    let result = tokio::time::timeout(Duration::from_secs(20), async {
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", client_port))
+            .await
+            .unwrap();
+        let (mut reader, mut writer) = stream.split();
+        exchange(&mut reader, &mut writer, "hop-before", 2).await;
+
+        // 至少经历两次端口跳跃后再收发
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        exchange(&mut reader, &mut writer, "hop-after", 2).await;
+    })
+    .await;
+
+    let mut tasks = vec![server_task, client_task];
+    tasks.extend(echo_tasks);
+    stop(tasks);
+    result.expect("端口跳跃期间连接应保持可用");
+
+    // 确认确实发生过切换，而不是连接一直停留在原端口
+    let log = std::fs::read_to_string(log_dir.join("client_output.log")).unwrap_or_default();
+    let _ = std::fs::remove_dir_all(&log_dir);
+    assert!(log.contains("端口跳跃"), "客户端日志应记录端口跳跃：{log}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn keep_alive_and_reconnect() {
     let (client_port, tasks) = start_pair(1).await;

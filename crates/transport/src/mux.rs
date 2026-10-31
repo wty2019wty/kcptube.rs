@@ -398,6 +398,8 @@ impl MuxTunnel {
         let mut next_expire = now_secs() + 1;
 
         loop {
+            // 每次循环重新取当前 socket，端口跳跃后自动使用新 socket
+            let socket = self.channel.socket();
             tokio::select! {
                 command = commands.recv() => {
                     let Some(command) = command else { break };
@@ -414,7 +416,7 @@ impl MuxTunnel {
                         MuxCommand::Shutdown => break,
                     }
                 }
-                result = self.channel.socket.recv_from(&mut datagram) => {
+                result = socket.recv_from(&mut datagram) => {
                     if let Ok((size, _)) = result {
                         let _ = self.channel.process_datagram(&datagram[..size]).await;
                     }

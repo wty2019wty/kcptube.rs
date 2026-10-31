@@ -343,16 +343,43 @@ fn is_due(now: u32, at: u32) -> bool {
 
 /// 解析 `host:port`（支持域名），返回首个地址。
 pub async fn resolve_endpoint(host: &str, port: u16) -> std::io::Result<SocketAddr> {
+    resolve_endpoint_filtered(host, port, None).await
+}
+
+/// 按地址族解析 `host:port`。
+///
+/// `want_ipv4` 为 `Some(true)` / `Some(false)` 时只接受 IPv4 / IPv6 地址，
+/// 对应配置里的 `ipv4_only` / `ipv6_only`。
+pub async fn resolve_endpoint_filtered(
+    host: &str,
+    port: u16,
+    want_ipv4: Option<bool>,
+) -> std::io::Result<SocketAddr> {
+    let matches = |ip: &std::net::IpAddr| match want_ipv4 {
+        Some(true) => ip.is_ipv4(),
+        Some(false) => ip.is_ipv6(),
+        None => true,
+    };
+
     if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        if !matches(&ip) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AddrNotAvailable,
+                format!("地址 {host} 不符合配置的 IP 版本限制"),
+            ));
+        }
         return Ok(SocketAddr::new(ip, port));
     }
-    let mut addresses = tokio::net::lookup_host((host, port)).await?;
-    addresses.next().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::AddrNotAvailable,
-            format!("无法解析地址 {host}:{port}"),
-        )
-    })
+
+    tokio::net::lookup_host((host, port))
+        .await?
+        .find(|address| matches(&address.ip()))
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::AddrNotAvailable,
+                format!("无法解析地址 {host}:{port}"),
+            )
+        })
 }
 
 /// 当前系统时间（毫秒，取低 32 位；对应 C++ `TimeNowForKCP`）
@@ -439,6 +466,29 @@ mod tests {
         assert_eq!(updater.run_due(2000).await, 1);
         assert_eq!(updater.next_deadline(), Some(2010));
         assert_eq!(updater.run_due(2010).await, 2);
+    }
+
+    #[tokio::test]
+    async fn resolve_respects_ip_family() {
+        let v4 = resolve_endpoint_filtered("127.0.0.1", 80, Some(true))
+            .await
+            .unwrap();
+        assert!(v4.is_ipv4());
+        assert!(
+            resolve_endpoint_filtered("127.0.0.1", 80, Some(false))
+                .await
+                .is_err()
+        );
+        assert!(
+            resolve_endpoint_filtered("::1", 80, Some(false))
+                .await
+                .is_ok()
+        );
+        assert!(
+            resolve_endpoint_filtered("::1", 80, Some(true))
+                .await
+                .is_err()
+        );
     }
 
     #[test]

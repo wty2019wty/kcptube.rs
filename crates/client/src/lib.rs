@@ -3,8 +3,8 @@
 //! 客户端模式（对应 C++ `modes/client.cpp`）。
 //!
 //! 已实现：TCP + UDP 监听、`initialise` 握手（超时后换新端口重试）、
-//! `raw_data` 与 mux 转发、FEC、保活与状态日志。
-//! 端口跳跃、STUN/DDNS 与 `[custom_input]` 映射留到后续里程碑。
+//! `raw_data` 与 mux 转发、FEC、端口跳跃、保活与状态日志。
+//! `[custom_input*]` 映射待接入；STUN/DDNS 属于 M6。
 
 use kcptube_config::UserSettings;
 use kcptube_kcp::{KcpConfig, KcpError};
@@ -13,16 +13,18 @@ use kcptube_logging::{
     time_string_with_brackets, to_speed_unit,
 };
 use kcptube_protocol::ProtocolError;
-use kcptube_protocol::constant::{HANDSHAKE_TIMEOUT, KCP_CLEANUP_WAITS, PACKET_LENGTH};
+use kcptube_protocol::constant::{
+    HANDSHAKE_TIMEOUT, KCP_CLEANUP_WAITS, PACKET_LENGTH, RECEIVER_CLEANUP_WAITS,
+};
 use kcptube_protocol::packet::{
     Feature, ProtocolType, SettingsWrapper, create_data_packet, create_keep_alive_packet,
-    create_keep_alive_response_packet, inform_disconnect_packet, request_initialise_packet,
-    unpack_inner,
+    create_keep_alive_response_packet, create_test_connection_packet, inform_disconnect_packet,
+    request_initialise_packet, unpack_inner,
 };
 use kcptube_transport::{
     KcpChannel, MAX_INNER_MESSAGE, MuxEvent, MuxRecord, MuxSink, MuxTcpSink, MuxTunnel,
-    PacketCodec, TcpListenerSession, TcpSession, TransportError, UdpEndpoint, now_ms, now_secs,
-    resolve_endpoint,
+    PacketCodec, TcpListenerSession, TcpSession, TransportError, UdpBindOptions, UdpEndpoint,
+    now_ms, now_secs, resolve_endpoint_filtered,
 };
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -30,7 +32,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, RwLock, mpsc};
 use tokio::task::JoinSet;
 use tokio::time::{Duration, Instant, interval};
 
@@ -78,21 +80,24 @@ impl Client {
                 "listen_port is not set（自定义输入映射将在 M4 实现）".to_string(),
             ));
         }
+        if settings.destination_address_list.is_empty() {
+            return Err(ClientError::Startup(
+                "destination_address is not set".to_string(),
+            ));
+        }
+        if settings.destination_ports.is_empty() {
+            return Err(ClientError::Startup(
+                "destination_port is not set".to_string(),
+            ));
+        }
 
-        let server_host = settings
-            .destination_address_list
+        // 客户端只监听第一个端口（与 C++ `listen_ports.front()` 一致）
+        let listen_port = *settings
+            .listen_ports
             .first()
-            .cloned()
-            .ok_or_else(|| ClientError::Startup("destination_address is not set".to_string()))?;
-        let server_port = *settings
-            .destination_ports
-            .first()
-            .ok_or_else(|| ClientError::Startup("destination_port is not set".to_string()))?;
-        let server_peer = resolve_endpoint(&server_host, server_port).await?;
-        tracing::info!("客户端目标服务端 {server_peer}");
-
+            .ok_or_else(|| ClientError::Startup("listen_port is not set".to_string()))?;
         let listen_addresses = if settings.listen_on.is_empty() {
-            vec!["0.0.0.0".to_string()]
+            vec![settings.ip_version_only.wildcard_ip().to_string()]
         } else {
             settings.listen_on.clone()
         };
@@ -106,6 +111,7 @@ impl Client {
             udp_relays: Mutex::new(HashMap::new()),
             mux: Mutex::new(Vec::new()),
             mux_cursor: AtomicUsize::new(0),
+            destination_ports: RwLock::new(settings.destination_ports.clone()),
             next_channel_id: AtomicU64::new(1),
             next_status_at: AtomicI64::new(now_secs() + LOGGING_GAP_SECONDS as i64),
         });
@@ -115,10 +121,8 @@ impl Client {
         // mux 模式：预先建立 `mux_tunnels` 条共享通道（对应 C++ `establish_mux_channels`）
         if mux_mode {
             for _ in 0..settings.mux_tunnels {
-                let (conv, channel) =
-                    establish_channel(&state, &server_host, server_port, ProtocolType::Mux).await?;
-                let tunnel =
-                    state.spawn_mux_tunnel(conv, channel, server_host.clone(), server_port);
+                let (conv, channel) = establish_channel(&state, ProtocolType::Mux).await?;
+                let tunnel = state.spawn_mux_tunnel(conv, channel);
                 state.mux.lock().await.push(tunnel);
                 tracing::info!("mux 通道 conv={conv} 已建立");
             }
@@ -143,58 +147,71 @@ impl Client {
             let ip: IpAddr = address
                 .parse()
                 .map_err(|_| ClientError::Startup(format!("无效的 listen_on 地址：{address}")))?;
-            for port in &settings.listen_ports {
-                let addr = SocketAddr::new(ip, *port);
-                let listener = match TcpListenerSession::bind(addr).await {
-                    Ok(listener) => listener,
-                    Err(error) => {
-                        let line = format!(
-                            "{}Listen Address incorrect - {addr}\n",
-                            time_string_with_brackets()
-                        );
-                        let _ = print_message_to_file(&settings.log_messages, &line);
-                        return Err(ClientError::Startup(format!(
-                            "无法监听 TCP {addr}: {error}"
-                        )));
-                    }
-                };
-                tracing::info!("客户端监听 TCP {addr}");
-
-                let tcp_state = state.clone();
-                let host = server_host.clone();
-                if mux_mode {
-                    tasks.spawn(async move { mux_accept_loop(listener, tcp_state).await });
-                } else {
-                    tasks.spawn(async move {
-                        accept_loop(listener, tcp_state, host, server_port).await
-                    });
+            if let Some(want_ipv4) = settings.ip_version_only.want_ipv4() {
+                if ip.is_ipv4() != want_ipv4 {
+                    return Err(ClientError::Startup(format!(
+                        "listen_on 地址 {ip} 与 ipv4_only/ipv6_only 配置冲突"
+                    )));
                 }
-
-                // 同一端口同时监听 UDP（对应 C++ 的 `udp_access_points`）
-                let udp_listener = match UdpEndpoint::bind(addr).await {
-                    Ok(endpoint) => endpoint,
-                    Err(error) => {
-                        let line = format!(
-                            "{}Listen Address incorrect - {addr}\n",
-                            time_string_with_brackets()
-                        );
-                        let _ = print_message_to_file(&settings.log_messages, &line);
-                        return Err(ClientError::Startup(format!(
-                            "无法监听 UDP {addr}: {error}"
-                        )));
-                    }
-                };
-                tracing::info!("客户端监听 UDP {addr}");
-
-                let udp_state = state.clone();
-                let host = server_host.clone();
-                if mux_mode {
-                    tasks.spawn(async move { mux_udp_listen_loop(udp_listener, udp_state).await });
-                } else {
-                    tasks.spawn(async move {
-                        udp_listen_loop(udp_listener, udp_state, host, server_port).await
-                    });
+            }
+            let addr = SocketAddr::new(ip, listen_port);
+            let ipv6_only = settings.ip_version_only.want_ipv4() == Some(false);
+            let listener = match TcpListenerSession::bind_with(
+                addr,
+                (addr.is_ipv6() && ipv6_only).then_some(true),
+            )
+            .await
+            {
+                Ok(listener) => listener,
+                Err(error) => {
+                    let line = format!(
+                        "{}Listen Address incorrect - {addr}\n",
+                        time_string_with_brackets()
+                    );
+                    let _ = print_message_to_file(&settings.log_messages, &line);
+                    return Err(ClientError::Startup(format!(
+                        "无法监听 TCP {addr}: {error}"
+                    )));
                 }
+            };
+            tracing::info!("客户端监听 TCP {addr}");
+
+            let tcp_state = state.clone();
+            if mux_mode {
+                tasks.spawn(async move { mux_accept_loop(listener, tcp_state).await });
+            } else {
+                tasks.spawn(async move { accept_loop(listener, tcp_state).await });
+            }
+
+            // 同一端口同时监听 UDP（对应 C++ 的 `udp_access_points`）
+            let udp_listener = match UdpEndpoint::bind_with(
+                addr,
+                UdpBindOptions {
+                    reuse_address: true,
+                    only_v6: (addr.is_ipv6() && ipv6_only).then_some(true),
+                },
+            )
+            .await
+            {
+                Ok(endpoint) => endpoint,
+                Err(error) => {
+                    let line = format!(
+                        "{}Listen Address incorrect - {addr}\n",
+                        time_string_with_brackets()
+                    );
+                    let _ = print_message_to_file(&settings.log_messages, &line);
+                    return Err(ClientError::Startup(format!(
+                        "无法监听 UDP {addr}: {error}"
+                    )));
+                }
+            };
+            tracing::info!("客户端监听 UDP {addr}");
+
+            let udp_state = state.clone();
+            if mux_mode {
+                tasks.spawn(async move { mux_udp_listen_loop(udp_listener, udp_state).await });
+            } else {
+                tasks.spawn(async move { udp_listen_loop(udp_listener, udp_state).await });
             }
         }
 
@@ -229,6 +246,8 @@ struct ClientState {
     mux: Mutex<Vec<Arc<MuxTunnel>>>,
     /// mux 通道轮询游标
     mux_cursor: AtomicUsize,
+    /// 动态目标端口列表（握手后可能被服务端返回的端口范围覆盖）
+    destination_ports: RwLock<Vec<u16>>,
     next_channel_id: AtomicU64,
     next_status_at: AtomicI64,
 }
@@ -251,14 +270,37 @@ impl ClientState {
         let _ = print_message_to_file(&self.settings.log_messages, &line);
     }
 
+    /// 随机挑一个目标地址与目标端口（对应 C++ `randomly_pick_index` +
+    /// `generate_new_port_number`）。
+    async fn pick_destination(&self) -> Result<(String, u16), ClientError> {
+        let host = random_pick(&self.settings.destination_address_list)
+            .cloned()
+            .ok_or_else(|| ClientError::Startup("destination_address is not set".to_string()))?;
+        let port = {
+            let ports = self.destination_ports.read().await;
+            random_pick(&ports)
+                .copied()
+                .ok_or_else(|| ClientError::Startup("destination_port is not set".to_string()))?
+        };
+        Ok((host, port))
+    }
+
+    /// 用服务端握手响应里的端口范围覆盖动态目标端口列表。
+    ///
+    /// 与 C++ `on_handshake_success` 一致：`port_start`/`port_end` 均非 0 时，
+    /// 生成 `port_start..port_end`（右开区间）。
+    async fn update_destination_ports(&self, port_start: u16, port_end: u16) {
+        if port_start == 0 || port_end == 0 || port_end <= port_start {
+            return;
+        }
+        let ports: Vec<u16> = (port_start..port_end).collect();
+        if !ports.is_empty() {
+            *self.destination_ports.write().await = ports;
+        }
+    }
+
     /// 建立一条 mux 隧道并启动收发任务。
-    fn spawn_mux_tunnel(
-        self: &Arc<Self>,
-        conv: u32,
-        channel: Arc<KcpChannel>,
-        server_host: String,
-        server_port: u16,
-    ) -> Arc<MuxTunnel> {
+    fn spawn_mux_tunnel(self: &Arc<Self>, conv: u32, channel: Arc<KcpChannel>) -> Arc<MuxTunnel> {
         let (tunnel, mut commands, events) = MuxTunnel::new(channel, conv);
         let keep_alive = self.settings.keep_alive;
         let udp_timeout = self.settings.udp_timeout;
@@ -280,11 +322,9 @@ impl ClientState {
 
             // 通道断开后补一条，保证本地连接始终有可用隧道
             // （对应 C++ `process_disconnect` 里的 `establish_mux_channels(1)`）
-            if let Ok((new_conv, new_channel)) =
-                establish_channel(&state, &server_host, server_port, ProtocolType::Mux).await
+            if let Ok((new_conv, new_channel)) = establish_channel(&state, ProtocolType::Mux).await
             {
-                let rebuilt =
-                    state.spawn_mux_tunnel(new_conv, new_channel, server_host.clone(), server_port);
+                let rebuilt = state.spawn_mux_tunnel(new_conv, new_channel);
                 state.mux.lock().await.push(rebuilt);
                 tracing::info!("mux 通道 conv={new_conv} 重建完成");
             }
@@ -382,8 +422,6 @@ impl ClientState {
 async fn udp_listen_loop(
     listener: UdpEndpoint,
     state: Arc<ClientState>,
-    server_host: String,
-    server_port: u16,
 ) -> Result<(), ClientError> {
     let mut buffer = vec![0u8; 65536];
     loop {
@@ -421,11 +459,8 @@ async fn udp_listen_loop(
 
         let state = state.clone();
         let listener = listener.clone();
-        let host = server_host.clone();
         tokio::spawn(async move {
-            if let Err(error) =
-                udp_relay_task(state.clone(), listener, peer, host, server_port, receiver).await
-            {
+            if let Err(error) = udp_relay_task(state.clone(), listener, peer, receiver).await {
                 tracing::warn!("UDP 中继 {peer} 结束：{error}");
                 state.udp_relays.lock().await.remove(&peer);
             }
@@ -438,12 +473,9 @@ async fn udp_relay_task(
     state: Arc<ClientState>,
     listener: UdpEndpoint,
     local_peer: SocketAddr,
-    server_host: String,
-    server_port: u16,
     from_local: mpsc::Receiver<Vec<u8>>,
 ) -> Result<(), ClientError> {
-    let (conv, channel) =
-        establish_channel(&state, &server_host, server_port, ProtocolType::Udp).await?;
+    let (conv, channel) = establish_channel(&state, ProtocolType::Udp).await?;
     tracing::debug!("UDP 中继 {local_peer} 握手完成，conv={conv}");
 
     let id = state.register_channel(conv, channel.clone()).await;
@@ -471,6 +503,7 @@ async fn udp_relay_loop(
     let mut remote_closed = false;
 
     loop {
+        let socket = channel.socket();
         tokio::select! {
             received = from_local.recv() => {
                 match received {
@@ -486,7 +519,7 @@ async fn udp_relay_loop(
                     }
                 }
             }
-            result = channel.socket.recv_from(&mut datagram) => {
+            result = socket.recv_from(&mut datagram) => {
                 if let Ok((size, _)) = result {
                     state.counters.add_ingress_raw(size);
                     let _ = channel.process_datagram(&datagram[..size]).await;
@@ -583,17 +616,14 @@ fn is_connection_reset(error: &std::io::Error) -> bool {
 async fn accept_loop(
     listener: TcpListenerSession,
     state: Arc<ClientState>,
-    server_host: String,
-    server_port: u16,
 ) -> Result<(), ClientError> {
     loop {
         match listener.accept().await {
             Ok((session, peer)) => {
                 tracing::debug!("接受本地 TCP 连接 {peer}");
                 let state = state.clone();
-                let host = server_host.clone();
                 tokio::spawn(async move {
-                    if let Err(error) = handle_connection(state, host, server_port, session).await {
+                    if let Err(error) = handle_connection(state, session).await {
                         tracing::warn!("TCP 连接 {peer} 结束：{error}");
                     }
                 });
@@ -607,14 +637,8 @@ async fn accept_loop(
 }
 
 /// 一条本地 TCP 连接对应一条 KCP 通道。
-async fn handle_connection(
-    state: Arc<ClientState>,
-    server_host: String,
-    server_port: u16,
-    tcp: TcpSession,
-) -> Result<(), ClientError> {
-    let (conv, channel) =
-        establish_channel(&state, &server_host, server_port, ProtocolType::Tcp).await?;
+async fn handle_connection(state: Arc<ClientState>, tcp: TcpSession) -> Result<(), ClientError> {
+    let (conv, channel) = establish_channel(&state, ProtocolType::Tcp).await?;
     let id = state.register_channel(conv, channel.clone()).await;
     let result = relay_tcp(&state, tcp, channel).await;
     state.unregister_channel(id).await;
@@ -794,18 +818,14 @@ async fn mux_event_loop(tunnel: Arc<MuxTunnel>, mut events: mpsc::Receiver<MuxEv
 /// 超时后丢弃旧 socket，重新解析服务端地址并发起新握手。
 async fn establish_channel(
     state: &Arc<ClientState>,
-    server_host: &str,
-    server_port: u16,
     protocol: ProtocolType,
 ) -> Result<(u32, Arc<KcpChannel>), ClientError> {
     loop {
-        let server_peer = resolve_endpoint(server_host, server_port).await?;
-        let bind_addr = if server_peer.is_ipv4() {
-            SocketAddr::from(([0, 0, 0, 0], 0))
-        } else {
-            SocketAddr::from(([0u16; 8], 0))
-        };
-        let socket = UdpEndpoint::bind(bind_addr).await?;
+        let (host, port) = state.pick_destination().await?;
+        let server_peer =
+            resolve_endpoint_filtered(&host, port, state.settings.ip_version_only.want_ipv4())
+                .await?;
+        let socket = UdpEndpoint::bind(wildcard_addr(server_peer)).await?;
 
         let handshake = Arc::new(
             KcpChannel::new_with_fec(
@@ -817,6 +837,13 @@ async fn establish_channel(
             )
             .await?,
         );
+        handshake.set_blast(state.settings.blast);
+        handshake
+            .set_bandwidth(
+                state.settings.outbound_bandwidth,
+                state.settings.inbound_bandwidth,
+            )
+            .await;
         {
             let mut kcp = handshake.endpoint.kcp.lock().await;
             kcp.set_rx_minrto(10);
@@ -832,12 +859,17 @@ async fn establish_channel(
 
         match wait_handshake(state, &handshake, &socket).await {
             Ok(response) => {
+                // 服务端会把自己的监听端口范围回传，客户端据此更新跳跃端口池
+                state
+                    .update_destination_ports(response.port_start, response.port_end)
+                    .await;
+
                 let conv = response.uid;
                 if conv == 0 {
                     state.log_message("服务端返回的 conv 为 0，重新握手");
                     continue;
                 }
-                tracing::debug!("握手完成，conv={conv}");
+                tracing::debug!("握手完成，conv={conv}（服务端 {host}:{port}）");
 
                 let channel = Arc::new(
                     KcpChannel::new_with_fec(
@@ -849,11 +881,28 @@ async fn establish_channel(
                     )
                     .await?,
                 );
+                channel.set_blast(state.settings.blast);
+                // 对应 C++：客户端出方向带宽受服务端入方向带宽限制
+                let outbound = if response.inbound_bandwidth > 0 {
+                    state
+                        .settings
+                        .outbound_bandwidth
+                        .min(response.inbound_bandwidth)
+                } else {
+                    state.settings.outbound_bandwidth
+                };
+                channel
+                    .set_bandwidth(outbound, state.settings.inbound_bandwidth)
+                    .await;
+                channel.reset_window_values(handshake.rx_srtt().await).await;
                 {
                     let mut kcp = channel.endpoint.kcp.lock().await;
                     kcp.set_rx_minrto(10);
                     kcp.update(now_ms());
                 }
+
+                // 端口跳跃：定时探测新目标并切换发送 socket
+                spawn_port_hopper(state, &channel);
                 return Ok((conv, channel));
             }
             Err(ClientError::HandshakeTimeout) => {
@@ -867,6 +916,138 @@ async fn establish_channel(
                 return Err(ClientError::Startup(message));
             }
             Err(error) => return Err(error),
+        }
+    }
+}
+
+/// 根据对端地址族选择本地通配地址。
+fn wildcard_addr(peer: SocketAddr) -> SocketAddr {
+    if peer.is_ipv4() {
+        SocketAddr::from(([0, 0, 0, 0], 0))
+    } else {
+        SocketAddr::from(([0u16; 8], 0))
+    }
+}
+
+/// 定时端口跳跃任务（对应 C++ `change_new_port` / `test_before_change`）。
+///
+/// 每 `dport_refresh` 秒通过一条临时握手通道发送 `test_connection`，
+/// 收到响应后用新的目标地址与本地 socket 重绑主通道。
+fn spawn_port_hopper(state: &Arc<ClientState>, channel: &Arc<KcpChannel>) {
+    let refresh = state.settings.dynamic_port_refresh;
+    if refresh <= 0 {
+        return;
+    }
+
+    let weak = Arc::downgrade(channel);
+    let state = state.clone();
+    tokio::spawn(async move {
+        let mut ticker = interval(Duration::from_secs(refresh as u64));
+        // `interval` 的第一次 tick 立即完成，先跳过
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            let Some(channel) = weak.upgrade() else {
+                break;
+            };
+            match hop_port(&state, &channel).await {
+                Ok(Some(old_socket)) => {
+                    // 旧 socket 继续收 4 秒，尽量接住切换瞬间在途的报文
+                    // （对应 C++ `expiring_forwarders` 在 4 秒后 stop）
+                    let reader = channel.clone();
+                    tokio::spawn(async move {
+                        drain_old_socket(reader, old_socket).await;
+                    });
+                }
+                Ok(None) => {}
+                Err(error) => tracing::warn!("端口跳跃失败：{error}"),
+            }
+        }
+    });
+}
+
+/// 探测新端口，成功返回旧 socket。
+async fn hop_port(
+    state: &Arc<ClientState>,
+    channel: &Arc<KcpChannel>,
+) -> Result<Option<UdpEndpoint>, ClientError> {
+    let (host, port) = state.pick_destination().await?;
+    let peer =
+        resolve_endpoint_filtered(&host, port, state.settings.ip_version_only.want_ipv4()).await?;
+    let socket = UdpEndpoint::bind(wildcard_addr(peer)).await?;
+
+    let probe = Arc::new(
+        KcpChannel::new_with_fec(
+            state.codec.clone(),
+            handshake_config(state.settings.kcp_mtu),
+            socket.clone(),
+            peer,
+            state.fec,
+        )
+        .await?,
+    );
+    probe.set_blast(true);
+    {
+        let mut kcp = probe.endpoint.kcp.lock().await;
+        kcp.set_rx_minrto(10);
+    }
+    probe.send(&create_test_connection_packet()).await?;
+    probe.update(now_ms()).await?;
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut ticker = interval(Duration::from_millis(5));
+    let mut datagram = vec![0u8; PACKET_LENGTH + 256];
+    let mut inner = vec![0u8; MAX_INNER_MESSAGE];
+
+    loop {
+        if Instant::now() >= deadline {
+            return Ok(None);
+        }
+        tokio::select! {
+            _ = ticker.tick() => {
+                probe.update(now_ms()).await?;
+            }
+            result = socket.recv_from(&mut datagram) => {
+                if let Ok((size, _)) = result {
+                    let _ = probe.process_datagram(&datagram[..size]).await;
+                }
+            }
+            _ = tokio::time::sleep_until(deadline) => return Ok(None),
+        }
+
+        loop {
+            match probe.receive(&mut inner).await {
+                Ok(size) => {
+                    let (feature, _, _) = unpack_inner(&inner[..size])?;
+                    // `test_connection` 与 `keep_alive` 共用同一 feature 值
+                    if matches!(feature, Feature::KeepAlive | Feature::KeepAliveResponse) {
+                        let old = channel.rebind(socket.clone(), peer)?;
+                        state.log_message(&format!("端口跳跃：切换到 {host}:{port}"));
+                        return Ok(Some(old));
+                    }
+                }
+                Err(TransportError::Kcp(KcpError::WouldBlock)) => break,
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+}
+
+/// 切换后继续读取旧 socket 一段时间，避免在途 ACK 被直接丢弃。
+async fn drain_old_socket(channel: Arc<KcpChannel>, socket: UdpEndpoint) {
+    let deadline = Instant::now() + Duration::from_secs((RECEIVER_CLEANUP_WAITS / 2).max(1) as u64);
+    let mut buffer = vec![0u8; PACKET_LENGTH + 256];
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep_until(deadline) => break,
+            result = socket.recv_from(&mut buffer) => {
+                match result {
+                    Ok((size, _)) => {
+                        let _ = channel.process_datagram(&buffer[..size]).await;
+                    }
+                    Err(_) => break,
+                }
+            }
         }
     }
 }
@@ -940,6 +1121,7 @@ async fn relay_tcp(
     let mut remote_closed = false;
 
     'relay: loop {
+        let socket = channel.socket();
         tokio::select! {
             result = reader.read(&mut tcp_buffer) => {
                 match result {
@@ -955,7 +1137,7 @@ async fn relay_tcp(
                     }
                 }
             }
-            result = channel.socket.recv_from(&mut datagram) => {
+            result = socket.recv_from(&mut datagram) => {
                 if let Ok((size, _)) = result {
                     state.counters.add_ingress_raw(size);
                     let _ = channel.process_datagram(&datagram[..size]).await;
@@ -1025,6 +1207,15 @@ async fn relay_tcp(
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     Ok(())
+}
+
+/// 从列表中随机取一个元素（对应 C++ `randomly_pick_index`）。
+fn random_pick<T>(items: &[T]) -> Option<&T> {
+    if items.is_empty() {
+        None
+    } else {
+        Some(&items[rand::random::<u32>() as usize % items.len()])
+    }
 }
 
 /// FEC 配置：只有 k 与 r 都大于 0 时才启用。

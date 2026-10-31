@@ -82,6 +82,26 @@ impl IpVersionOnly {
     pub const fn is_set(self) -> bool {
         !matches!(self, IpVersionOnly::NotSet)
     }
+
+    /// 按配置选择通配监听地址：`ipv6_only` 用 `[::]`，其余用 `0.0.0.0`。
+    ///
+    /// 未显式指定时保持与旧版 Rust 实现一致的 IPv4 监听，避免在缺少 IPv6
+    /// 的环境中启动失败；需要只监听 IPv6 时设置 `ipv6_only=yes`。
+    pub const fn wildcard_ip(self) -> std::net::IpAddr {
+        match self {
+            IpVersionOnly::Ipv6 => std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED),
+            _ => std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+        }
+    }
+
+    /// 解析目标地址时应限定的地址族。
+    pub const fn want_ipv4(self) -> Option<bool> {
+        match self {
+            IpVersionOnly::Ipv4 => Some(true),
+            IpVersionOnly::Ipv6 => Some(false),
+            _ => None,
+        }
+    }
 }
 
 /// 一条配置（对应 C++ `user_settings`）。
@@ -536,5 +556,24 @@ destination_port=80
                 .iter()
                 .any(|e| e.to_string() == "Both ipv4_only and ipv6_only are set as true")
         );
+    }
+
+    #[test]
+    fn ip_version_selects_wildcard_and_family() {
+        assert_eq!(
+            IpVersionOnly::Ipv4.wildcard_ip(),
+            std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)
+        );
+        assert_eq!(
+            IpVersionOnly::Ipv6.wildcard_ip(),
+            std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED)
+        );
+        assert_eq!(
+            IpVersionOnly::NotSet.wildcard_ip(),
+            std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)
+        );
+        assert_eq!(IpVersionOnly::Ipv4.want_ipv4(), Some(true));
+        assert_eq!(IpVersionOnly::Ipv6.want_ipv4(), Some(false));
+        assert_eq!(IpVersionOnly::NotSet.want_ipv4(), None);
     }
 }

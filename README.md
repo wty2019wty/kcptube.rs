@@ -15,8 +15,9 @@
 | 配置解析（`crates/config`） | 🟢 完整解析与校验，`--check-config` 可用 |
 | 传输层（`crates/transport`） | 🟢 KCP 调度、加密包层、UDP/TCP 封装、`KcpChannel`、FEC 收发流水线、mux 隧道 |
 | 日志（`crates/logging`） | 🟢 messages / status / ip 三类文件，格式与 C++ 一致 |
-| client / server / relay | 🟢 client/server 支持 TCP + UDP、单通道与 mux 多路复用（含 FEC、保活、会话回收、握手重试）；relay 仍为入口 |
+| client / server / relay | 🟢 client/server 支持 TCP + UDP、单通道与 mux 多路复用、端口跳跃（含 FEC、保活、会话回收、握手重试）；relay 仍为入口 |
 | 连通性测试（`--try`） | 🟡 未实现 |
+| STUN / DDNS | 🟡 计划 M6 |
 
 ## 文档
 

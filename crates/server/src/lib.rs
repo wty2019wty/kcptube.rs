@@ -2,9 +2,9 @@
 
 //! 服务端模式（对应 C++ `modes/server.cpp`）。
 //!
-//! 已实现：UDP 监听、`initialise` 握手、TCP/UDP/mux 转发、FEC、
-//! 空闲清理、保活与状态日志。
-//! 端口范围监听、端口跳跃、STUN/DDNS 与 `[custom_input]` 映射留到后续里程碑。
+//! 已实现：UDP 端口范围监听、`initialise` 握手、TCP/UDP/mux 转发、FEC、
+//! 端口跳跃（服务端侧按源地址/监听 socket 重定向）、空闲清理、保活与状态日志。
+//! `[custom_input*]` 映射待接入；STUN/DDNS 属于 M6。
 
 use kcptube_config::UserSettings;
 use kcptube_kcp::{KcpConfig, KcpError};
@@ -23,8 +23,8 @@ use kcptube_protocol::packet::{
 };
 use kcptube_transport::{
     IncomingFrame, KcpChannel, MAX_INNER_MESSAGE, MuxEvent, MuxRecord, MuxSink, MuxTcpSink,
-    MuxTunnel, PacketCodec, TcpSession, TransportError, UdpEndpoint, now_ms, now_secs, parse_frame,
-    resolve_endpoint,
+    MuxTunnel, PacketCodec, TcpSession, TransportError, UdpBindOptions, UdpEndpoint, now_ms,
+    now_secs, parse_frame, resolve_endpoint_filtered,
 };
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -74,55 +74,73 @@ impl Server {
             &settings.encryption_password,
         ));
 
-        let port = *settings
-            .listen_ports
-            .first()
-            .ok_or_else(|| ServerError::Startup("listen_port is not set".to_string()))?;
-        if settings.listen_ports.len() > 1 {
-            tracing::warn!("M3 只监听第一个端口 {}（端口范围将在 M4 实现）", port);
+        if settings.listen_ports.is_empty() {
+            return Err(ServerError::Startup("listen_port is not set".to_string()));
         }
 
         let listen_addresses = if settings.listen_on.is_empty() {
-            vec!["0.0.0.0".to_string()]
+            vec![settings.ip_version_only.wildcard_ip().to_string()]
         } else {
             settings.listen_on.clone()
         };
+
+        // 所有监听 socket 共享同一份会话表：端口跳跃时同一个 conv 会从新端口、
+        // 新源地址到达（对应 C++ `kcp_channels` 在所有 `udp_server` 之间共享）。
+        let state = Arc::new(SocketState {
+            settings: settings.clone(),
+            codec: codec.clone(),
+            fec: fec_pair(&settings),
+            fec_original: fec_pair(&settings).map(|(original, _)| original as usize),
+            handshakes: Mutex::new(HashMap::new()),
+            sessions: Mutex::new(HashMap::new()),
+            counters: Arc::new(StatusCounters::default()),
+            next_status_at: AtomicI64::new(now_secs() + LOGGING_GAP_SECONDS as i64),
+        });
 
         let mut tasks = JoinSet::new();
         for address in listen_addresses {
             let ip: IpAddr = address
                 .parse()
                 .map_err(|_| ServerError::Startup(format!("无效的 listen_on 地址：{address}")))?;
-            let addr = SocketAddr::new(ip, port);
-            let socket = match UdpEndpoint::bind(addr).await {
-                Ok(socket) => socket,
-                Err(error) => {
-                    let message = format!(
-                        "{}Listen Address incorrect - {addr}\n",
-                        time_string_with_brackets()
-                    );
-                    let _ = print_message_to_file(&settings.log_messages, &message);
-                    return Err(ServerError::Startup(format!("无法监听 {addr}: {error}")));
+            if let Some(want_ipv4) = settings.ip_version_only.want_ipv4() {
+                if ip.is_ipv4() != want_ipv4 {
+                    return Err(ServerError::Startup(format!(
+                        "listen_on 地址 {ip} 与 ipv4_only/ipv6_only 配置冲突"
+                    )));
                 }
-            };
-            tracing::info!("服务端监听 UDP {addr}");
+            }
+            let ipv6_only = settings.ip_version_only.want_ipv4() == Some(false);
+            for port in &settings.listen_ports {
+                let addr = SocketAddr::new(ip, *port);
+                let socket = match UdpEndpoint::bind_with(
+                    addr,
+                    UdpBindOptions {
+                        reuse_address: true,
+                        only_v6: (addr.is_ipv6() && ipv6_only).then_some(true),
+                    },
+                )
+                .await
+                {
+                    Ok(socket) => socket,
+                    Err(error) => {
+                        let message = format!(
+                            "{}Listen Address incorrect - {addr}\n",
+                            time_string_with_brackets()
+                        );
+                        let _ = print_message_to_file(&settings.log_messages, &message);
+                        return Err(ServerError::Startup(format!("无法监听 {addr}: {error}")));
+                    }
+                };
+                tracing::info!("服务端监听 UDP {addr}");
 
-            let state = Arc::new(SocketState {
-                settings: settings.clone(),
-                codec: codec.clone(),
-                fec: fec_pair(&settings),
-                fec_original: fec_pair(&settings).map(|(original, _)| original as usize),
-                handshakes: Mutex::new(HashMap::new()),
-                sessions: Mutex::new(HashMap::new()),
-                counters: Arc::new(StatusCounters::default()),
-                next_status_at: AtomicI64::new(now_secs() + LOGGING_GAP_SECONDS as i64),
-            });
-            tasks.spawn(async move { state.run(socket).await });
+                let state = state.clone();
+                tasks.spawn(async move { state.run_socket(socket).await });
+            }
         }
 
-        if tasks.is_empty() {
-            return Err(ServerError::Startup("没有可用的监听地址".to_string()));
-        }
+        // KCP 定时驱动与维护任务只启动一份，避免多个监听 socket 重复 update
+        let driver = state.clone();
+        tasks.spawn(async move { driver.run_driver().await });
 
         // 任一监听循环异常退出就上报
         while let Some(result) = tasks.join_next().await {
@@ -220,6 +238,13 @@ struct Destination {
     address: SocketAddr,
 }
 
+/// 建立数据通道时需要用到的带宽与 RTT 提示。
+#[derive(Clone, Copy)]
+struct BandwidthHint {
+    outbound: u64,
+    srtt: i32,
+}
+
 struct SocketState {
     settings: Arc<UserSettings>,
     codec: Arc<PacketCodec>,
@@ -235,8 +260,35 @@ struct SocketState {
 }
 
 impl SocketState {
-    async fn run(self: Arc<Self>, socket: UdpEndpoint) -> Result<(), ServerError> {
+    /// 单个监听 socket 的收包循环；所有端口共享同一个 `SocketState`。
+    async fn run_socket(self: Arc<Self>, socket: UdpEndpoint) -> Result<(), ServerError> {
+        let listener_addr = socket.local_addr()?;
         let mut buffer = vec![0u8; PACKET_LENGTH + 256];
+
+        loop {
+            match socket.recv_from(&mut buffer).await {
+                Ok((size, peer)) => {
+                    if let Err(error) = self
+                        .handle_datagram(&socket, listener_addr, peer, &buffer[..size])
+                        .await
+                    {
+                        tracing::debug!("丢弃来自 {peer} 的数据报：{error}");
+                    }
+                }
+                Err(error) if is_connection_reset(&error) => {
+                    // Windows 上 UDP 收到 ICMP 端口不可达（对端已关闭）时会返回
+                    // WSAECONNRESET；会话关闭后仍在重传尾包时很常见，忽略即可。
+                    tracing::trace!("UDP 收到对端不可达提示，已忽略");
+                }
+                Err(error) => {
+                    tracing::warn!("UDP 接收失败：{error}");
+                }
+            }
+        }
+    }
+
+    /// KCP 定时驱动与维护：全局只启动一份，避免多个监听 socket 重复 update。
+    async fn run_driver(self: Arc<Self>) -> Result<(), ServerError> {
         // KCP 驱动：5ms 一次，与 C++ `KCPUpdater` 的调度精度一致
         let mut kcp_ticker = interval(Duration::from_millis(5));
         // 维护：每秒一次（对应 C++ `gbv_expring_update_interval`）
@@ -244,26 +296,6 @@ impl SocketState {
 
         loop {
             tokio::select! {
-                result = socket.recv_from(&mut buffer) => {
-                    match result {
-                        Ok((size, peer)) => {
-                            if let Err(error) = self
-                                .handle_datagram(&socket, peer, &buffer[..size])
-                                .await
-                            {
-                                tracing::debug!("丢弃来自 {peer} 的数据报：{error}");
-                            }
-                        }
-                        Err(error) if is_connection_reset(&error) => {
-                            // Windows 上 UDP 收到 ICMP 端口不可达（对端已关闭）时会返回
-                            // WSAECONNRESET；会话关闭后仍在重传尾包时很常见，忽略即可。
-                            tracing::trace!("UDP 收到对端不可达提示，已忽略");
-                        }
-                        Err(error) => {
-                            tracing::warn!("UDP 接收失败：{error}");
-                        }
-                    }
-                }
                 _ = kcp_ticker.tick() => {
                     self.tick_kcp().await;
                 }
@@ -278,6 +310,7 @@ impl SocketState {
     async fn handle_datagram(
         self: &Arc<Self>,
         socket: &UdpEndpoint,
+        listener_addr: SocketAddr,
         peer: SocketAddr,
         datagram: &[u8],
     ) -> Result<(), ServerError> {
@@ -292,7 +325,8 @@ impl SocketState {
         if conv == 0 {
             self.handle_handshake(socket, peer, frame).await
         } else {
-            self.handle_data(conv, peer, frame).await
+            self.handle_data(socket, listener_addr, conv, peer, frame)
+                .await
         }
     }
 
@@ -354,6 +388,13 @@ impl SocketState {
             )
             .await?,
         );
+        channel.set_blast(self.settings.blast);
+        channel
+            .set_bandwidth(
+                self.settings.outbound_bandwidth,
+                self.settings.inbound_bandwidth,
+            )
+            .await;
         {
             let mut kcp = channel.endpoint.kcp.lock().await;
             kcp.set_rx_minrto(10);
@@ -386,29 +427,45 @@ impl SocketState {
                 return Ok(());
             }
         };
-        let target = match resolve_endpoint(&host, port).await {
-            Ok(address) => Destination {
-                host: host.clone(),
-                port,
-                address,
-            },
-            Err(error) => {
-                let packet = inform_error_packet(protocol, &error.to_string());
-                entry.channel.send(&packet).await?;
-                entry.channel.update(now_ms()).await?;
-                self.log_message(&format!("{peer} -> 无法解析 {host}:{port}：{error}"));
-                return Ok(());
-            }
+        let target =
+            match resolve_endpoint_filtered(&host, port, self.settings.ip_version_only.want_ipv4())
+                .await
+            {
+                Ok(address) => Destination {
+                    host: host.clone(),
+                    port,
+                    address,
+                },
+                Err(error) => {
+                    let packet = inform_error_packet(protocol, &error.to_string());
+                    entry.channel.send(&packet).await?;
+                    entry.channel.update(now_ms()).await?;
+                    self.log_message(&format!("{peer} -> 无法解析 {host}:{port}：{error}"));
+                    return Ok(());
+                }
+            };
+
+        // 对应 C++：服务端出方向带宽受客户端入方向带宽限制
+        let outbound = if wrapper.inbound_bandwidth > 0 {
+            self.settings
+                .outbound_bandwidth
+                .min(wrapper.inbound_bandwidth)
+        } else {
+            self.settings.outbound_bandwidth
+        };
+        let hint = BandwidthHint {
+            outbound,
+            srtt: entry.channel.rx_srtt().await,
         };
 
         if protocol == ProtocolType::Udp {
-            self.establish_udp(socket, peer, entry, protocol, &target)
+            self.establish_udp(socket, peer, entry, protocol, &target, hint)
                 .await
         } else if protocol == ProtocolType::Mux {
-            self.establish_mux(socket, peer, entry, protocol, &target)
+            self.establish_mux(socket, peer, entry, protocol, &target, hint)
                 .await
         } else {
-            self.establish_tcp(socket, peer, entry, protocol, &target)
+            self.establish_tcp(socket, peer, entry, protocol, &target, hint)
                 .await
         }
     }
@@ -420,6 +477,7 @@ impl SocketState {
         entry: &HandshakeEntry,
         protocol: ProtocolType,
         target: &Destination,
+        hint: BandwidthHint,
     ) -> Result<(), ServerError> {
         let Destination {
             host,
@@ -438,7 +496,7 @@ impl SocketState {
         };
         tracing::info!("KCP 握手成功：{peer} -> TCP {host}:{port}");
 
-        let (conv, channel) = self.create_data_channel(socket, peer).await?;
+        let (conv, channel) = self.create_data_channel(socket, peer, hint).await?;
         let (reader, writer) = tcp.into_split();
         let session = self.build_session(
             channel.clone(),
@@ -463,6 +521,7 @@ impl SocketState {
         entry: &HandshakeEntry,
         protocol: ProtocolType,
         target: &Destination,
+        hint: BandwidthHint,
     ) -> Result<(), ServerError> {
         let Destination {
             host,
@@ -486,7 +545,7 @@ impl SocketState {
         };
         tracing::info!("KCP 握手成功：{peer} -> UDP {host}:{port}");
 
-        let (conv, channel) = self.create_data_channel(socket, peer).await?;
+        let (conv, channel) = self.create_data_channel(socket, peer, hint).await?;
         let session = self.build_session(
             channel.clone(),
             SessionKind::Udp {
@@ -510,9 +569,10 @@ impl SocketState {
         entry: &HandshakeEntry,
         protocol: ProtocolType,
         target: &Destination,
+        hint: BandwidthHint,
     ) -> Result<(), ServerError> {
         tracing::info!("KCP 握手成功：{peer} -> mux");
-        let (conv, channel) = self.create_data_channel(socket, peer).await?;
+        let (conv, channel) = self.create_data_channel(socket, peer, hint).await?;
         let (tunnel, mut commands, events) = MuxTunnel::new(channel.clone(), conv);
 
         let session = self.build_session(
@@ -548,6 +608,7 @@ impl SocketState {
         &self,
         socket: &UdpEndpoint,
         peer: SocketAddr,
+        hint: BandwidthHint,
     ) -> Result<(u32, Arc<KcpChannel>), ServerError> {
         let conv = self.allocate_conv().await;
         let channel = Arc::new(
@@ -560,6 +621,11 @@ impl SocketState {
             )
             .await?,
         );
+        channel.set_blast(self.settings.blast);
+        channel
+            .set_bandwidth(hint.outbound, self.settings.inbound_bandwidth)
+            .await;
+        channel.reset_window_values(hint.srtt).await;
         {
             let mut kcp = channel.endpoint.kcp.lock().await;
             kcp.set_rx_minrto(10);
@@ -656,6 +722,8 @@ impl SocketState {
 
     async fn handle_data(
         &self,
+        socket: &UdpEndpoint,
+        listener_addr: SocketAddr,
         conv: u32,
         peer: SocketAddr,
         frame: IncomingFrame<'_>,
@@ -668,7 +736,16 @@ impl SocketState {
             return Ok(());
         };
 
-        session.channel.set_peer(peer);
+        // 端口跳跃：同一个 conv 可能从新的服务端端口 / 客户端源地址到达，
+        // 立即把回包 socket 与对端重定向到新位置（对应 C++ `ingress_listener`
+        // 与 `ingress_source_endpoint` 的更新）。
+        let socket_changed = session.channel.local_addr().ok() != Some(listener_addr);
+        if socket_changed {
+            let old = session.channel.rebind(socket.clone(), peer)?;
+            drop(old);
+        } else {
+            session.channel.set_peer(peer);
+        }
         session.channel.accept_frame(frame).await?;
         tracing::trace!("收到 conv={conv} 的数据帧");
         self.drain_data(&session).await;
@@ -1042,7 +1119,13 @@ async fn mux_server_event_loop(
                     continue;
                 }
                 let (host, port) = (address.user_input_ip.clone(), address.user_input_port);
-                match resolve_endpoint(&host, port).await {
+                match resolve_endpoint_filtered(
+                    &host,
+                    port,
+                    state.settings.ip_version_only.want_ipv4(),
+                )
+                .await
+                {
                     Ok(resolved) => {
                         let target = Destination {
                             host: host.clone(),

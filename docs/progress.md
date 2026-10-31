@@ -11,18 +11,19 @@
 | 指标 | 数值 |
 |---|---|
 | C++ 参考实现 | 14,308 行（`legacy-cpp/`，含 ikcp 1,109 行） |
-| Rust 代码 | 约 9,278 行（22 个 `.rs` 文件，非空行） |
+| Rust 代码 | 约 9,903 行（22 个 `.rs` 文件，非空行） |
 | crate 数 | 11（10 个 lib + 1 个 bin） |
-| 单元/集成测试 | 90 个，全部通过 |
-| 整体完成度 | **M0~M3 完成，M4 约 60%** |
+| 单元/集成测试 | 96 个，全部通过 |
+| 整体完成度 | **M0~M3 完成，M4 约 85%** |
 
 ```
 M0 基线            ██████████ 100%
 M1 协议基础层      ██████████ 100%
 M2 KCP/传输        ██████████ 100%
 M3 TCP 最小互通     ██████████ 100%
-M4 完整模式         ██████░░░░  60%   ← 当前（UDP + FEC + mux 已完成）
+M4 完整模式         ████████░░  85%   ← 当前（UDP + FEC + mux + 端口跳跃已完成）
 M5 relay/跨平台     ░░░░░░░░░░   0%
+M6 STUN/DDNS       ░░░░░░░░░░   0%
 ```
 
 ---
@@ -36,9 +37,9 @@ M5 relay/跨平台     ░░░░░░░░░░   0%
 | `crates/fec` | `data_operations.cpp` + Botan ZFEC | 🟢 100% | ZFEC 矩阵/GF(2^8)/编解码已移植，share 与 Botan 3.13 逐字节一致；含 `fec_container` 打包 |
 | `crates/kcp` | `3rd_party/ikcp.cpp`、`networks/kcp.cpp` | 🟢 100% | ikcp 全量移植；发送/重传/拥塞/窗口探测与 C++ 输出逐字节对撞通过 |
 | `crates/config` | `configurations.cpp`（1010 行） | 🟢 100% | 两遍解析、预设展开、MTU、relay 分段、自定义映射、日志路径、错误文本全部对齐 |
-| `crates/transport` | `connections.cpp`、`kcp_updater.cpp`、`mux_tunnel.cpp` | 🟢 96% | KCP 调度、加密包层、UDP/TCP 封装、`KcpChannel`、FEC 收发流水线、mux 隧道 |
-| `crates/client` | `client.cpp`（1917 行） | 🟢 88% | TCP + UDP 监听、握手（超时换端口重试）、`raw_data` 双向转发、mux 多路复用、保活、状态日志；端口跳跃未做 |
-| `crates/server` | `server.cpp`（1323 行） | 🟢 88% | TCP + UDP 转发、mux 多路复用、会话回收、保活、状态日志；STUN/DDNS 未做 |
+| `crates/transport` | `connections.cpp`、`kcp_updater.cpp`、`mux_tunnel.cpp` | 🟢 100% | KCP 调度、加密包层、UDP/TCP 封装、`KcpChannel`、FEC 收发流水线、mux 隧道、可切换发送 socket |
+| `crates/client` | `client.cpp`（1917 行） | 🟢 95% | TCP + UDP 监听、握手（超时换端口重试）、`raw_data`/mux 转发、端口跳跃、随机目标选择、保活、状态日志；`[custom_input*]` 映射未接入 |
+| `crates/server` | `server.cpp`（1323 行） | 🟢 95% | 端口范围监听、TCP/UDP/mux 转发、端口跳跃重定向、会话回收、保活、状态日志；STUN/DDNS 移至 M6 |
 | `crates/logging` | `share_defines.cpp` 日志函数 | 🟢 100% | messages（追加）/ status（覆盖）/ ip（覆盖）三类文件、`to_speed_unit` 与 C++ 逐档一致 |
 | `crates/relay` | `relay.cpp`（1802 行） | 🟡 5% | 仅入口；配置已能拆出 ingress/egress |
 | `crates/kcptube` | `main.cpp` | 🟢 90% | clap 参数、usage、`--check-config` 可用；`--try` 仍为骨架 |
@@ -123,7 +124,7 @@ Rust 输出完全一致，见 `crates/fec/src/lib.rs::vectors_match_botan_zfec`�
 
 ### 3.6 TCP 最小互通（M3，已完成）
 
-- [x] **server**：UDP 监听（`listen_on` + 首个 `listen_port`）
+- [x] **server**：UDP 监听（`listen_on` 下的全部 `listen_port`，M4 起支持端口范围）
 - [x] **server**：`conv=0` 握手分流、`initialise` 解析、随机分配 conv
 - [x] **server**：连接目标 TCP，双向 `raw_data` 转发
 - [x] **server**：按数据包源地址更新回包目标（C++ 客户端握手后会切换本地 UDP 端口）
@@ -149,7 +150,7 @@ Rust 输出完全一致，见 `crates/fec/src/lib.rs::vectors_match_botan_zfec`�
   - 每 30 秒新建连接：**119 / 119 成功，0 失败**
   - 往返延迟：平均 4.7 ms，最大 13.2 ms
   - 期间无断流、无会话泄漏；状态日志按 60 秒稳定写入
-- [ ] `ip_address.log`（依赖 STUN / DDNS，随 M4 补齐）
+- [ ] `ip_address.log`（依赖 STUN / DDNS，随 M6 补齐）
 
 > C++ 参考版编译使用 `legacy-cpp/` 的临时副本（仅 `dns_helper.cpp` 做 MinGW 兼容补丁），
 > 未修改仓库内的 `legacy-cpp/`。
@@ -206,6 +207,22 @@ Rust 输出完全一致，见 `crates/fec/src/lib.rs::vectors_match_botan_zfec`�
   - Rust ↔ Rust：`interop.rs::mux_tcp_and_udp_roundtrip`
 - [x] mux + FEC 组合（`fec=10:3`、`mux_tunnels=2`）双向互通
 
+### 3.10 端口跳跃与默认参数（M4，已完成）
+
+- [x] **server**：监听 `listen_ports` 中的全部端口（连续范围与列表），所有监听 socket 共享同一份会话表
+- [x] **server**：`conv` 从新端口 / 新源地址到达时，自动重绑回包 socket 与对端（对应 C++ `ingress_listener` / `ingress_source_endpoint`）
+- [x] **server**：KCP 定时驱动与维护只启动一份，避免多端口重复 `update`
+- [x] **client**：每个数据通道按 `dport_refresh` 周期发送 `test_connection` 探测新目标
+- [x] **client**：探测成功后重绑发送 socket 与目标地址，旧 socket 继续收 4 秒后关闭
+- [x] **client**：握手响应中的服务端端口范围会覆盖本地动态目标端口池（对齐 C++ `on_handshake_success`）
+- [x] **client**：每次连接随机选择 `destination_address` 与 `destination_port`（对齐 C++ `randomly_pick_index` / `generate_new_port_number`）
+- [x] **client**：只监听第一个 `listen_port`（对齐 C++ `listen_ports.front()`）
+- [x] **`blast`**：发送后立即 flush（对应 C++ `Refresh()`）
+- [x] **带宽**：握手 / 数据通道调用 `Kcp::set_bandwidth`，并用握手 SRTT 执行 `ResetWindowValues`
+- [x] **`ipv4_only` / `ipv6_only`**：监听 socket 地址族、`listen_on` 校验与目标解析按配置生效
+- [x] 互通验证：`interop.rs::port_hopping_keeps_connection`（`dport_refresh=1` 下跨越多次跳跃继续收发）
+- [ ] 与 C++ 客户端/服务端的端口跳跃互通（当前自动化覆盖为 Rust ↔ Rust）
+
 ---
 
 ## 4. 测试统计
@@ -216,20 +233,20 @@ Rust 输出完全一致，见 `crates/fec/src/lib.rs::vectors_match_botan_zfec`�
 | `crypto` | 12 | 4 种 AEAD 向量、`xor`/`none` 往返、篡改检测、IV 展开、CRC32 字节序 |
 | `fec` | 7 | GF 表、Botan 向量、往返、缺 share、container |
 | `kcp` | 13 | C++ 逐字节 transcript、分片、ACK、RTO、10% 丢包回环、窗口/带宽 |
-| `config` | 15 | 样例配置、端口/地址、预设、FEC/MTU、relay、自定义映射、错误文本 |
-| `transport` | 20 | 调度器、加密包层、UDP/TCP 封装、双通道 UDP 端到端、FEC 编解码/恢复/清理、mux 记录表 |
+| `config` | 16 | 样例配置、端口/地址、预设、FEC/MTU、relay、自定义映射、IP 版本、错误文本 |
+| `transport` | 24 | 调度器、加密包层、UDP/TCP 封装、双通道 UDP 端到端、FEC 编解码/恢复/清理、mux 记录表、socket 重绑、blast、带宽、地址族解析 |
 | `logging` | 4 | `to_speed_unit` 分档、空路径、追加/覆盖写 |
 | `server` | 2 | 端口连续性、超时常量与 C++ 对齐 |
-| `server`（集成） | 5 | `interop.rs`：TCP 往返、UDP 往返、FEC 往返、mux 往返、保活/重连 |
+| `server`（集成） | 6 | `interop.rs`：TCP 往返、UDP 往返、FEC 往返、mux 往返、端口跳跃、保活/重连 |
 | `client` | 1 | 握手超时常量与 C++ 对齐 |
-| **合计** | **90** | 全部通过 |
+| **合计** | **96** | 全部通过 |
 
 命令与结果：
 
 ```
 cargo fmt --all -- --check        → 0
 cargo clippy --workspace --all-targets -- -D warnings → 0
-cargo test --workspace            → 90 passed, 0 failed
+cargo test --workspace            → 96 passed, 0 failed
 cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 ```
 
@@ -239,39 +256,35 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 
 | # | 问题 | 影响 | 计划 |
 |---|---|---|---|
-| 1 | 服务端只监听第一个 `listen_port`（客户端会绑定全部，见 7.1） | 服务端端口范围/端口跳跃不可用 | M4 |
-| 2 | mux 已实现，但 `pre_connect_custom_address` 的发送侧仍需配合 `ignore_destination_*` 接入 | `ignore_listen_*` 场景无法指定目标 | M4 |
-| 3 | FEC 已接入；mux 已接入并可组合 | — | 已完成 |
-| 4 | relay 仍是骨架 | relay 模式不可用 | M5 |
-| 5 | `--try` 仅打印“尚未实现” | 连通性测试不可用 | M5 |
-| 6 | 会话空闲 255 秒会被强制关闭（与 C++ 一致），依赖 `keep_alive` 续命 | 长时间无流量的小连接可能被断开 | 保持兼容，文档说明 |
-| 6.1 | 握手通道在 4 秒后直接回收（C++ 是 4 秒清空输出、8 秒出表） | 等价行为，仅表项存在时间略短 | 保持现状 |
-| 6.2 | 客户端状态日志的 `KCP#<conv>` 用服务端分配的 conv | 与 C++ 一致 | — |
-| 6.3 | mux 背压用有界队列替代 C++ 的 `pause()` | 行为等价（读变慢即背压） | 保持现状 |
-| 7 | 客户端目标地址与目标端口固定取第一个（C++ 每次连接随机选择 `destination_address_list` 与 `destination_ports`） | 多地址/端口范围配置无法负载均衡或故障切换 | M4/M5 |
-| 7.1 | 客户端绑定 `listen_ports` 中的全部端口（C++ 只绑定第一个） | 配置端口范围时会额外占用大量端口 | 对齐 C++ 或文档说明 |
-| 7.2 | `blast` 默认 `true`，但传输层始终 `update + check`，未调用 `Kcp::refresh()` | 默认发送延迟可能高于 C++ | M4/M5 |
-| 7.3 | 带宽参数已写入 `settings_wrapper` 发给对端，但本地从不调用 `Kcp::set_bandwidth` | `inbound/outbound_bandwidth` 不生效 | M4 |
-| 8 | 协议无版本字段，锁定 `20260329` | 上游升级需同步 | 每次上游发版做 diff 并记录 |
-| 9 | `ipv4_only` / `ipv6_only` 仅解析与校验，运行时未生效（监听 socket 固定按 `listen_on` 或 `0.0.0.0`） | IPv6-only 环境无法按配置监听 | M4 |
-| 10 | `SO_SETFIB`（FreeBSD）未实现 | FreeBSD 多路由表不可用 | M5 |
-| 11 | `dashmap` 在 workspace 依赖中声明但未被任何 crate 使用 | 依赖膨胀 | 移除或接入 |
+| 1 | relay 仍是骨架 | relay 模式不可用 | M5 |
+| 2 | `--try` 仅打印“尚未实现” | 连通性测试不可用 | M5 |
+| 3 | 会话空闲 255 秒会被强制关闭（与 C++ 一致），依赖 `keep_alive` 续命 | 长时间无流量的小连接可能被断开 | 保持兼容，文档说明 |
+| 3.1 | 握手通道在 4 秒后直接回收（C++ 是 4 秒清空输出、8 秒出表） | 等价行为，仅表项存在时间略短 | 保持现状 |
+| 3.2 | 客户端状态日志的 `KCP#<conv>` 用服务端分配的 conv | 与 C++ 一致 | — |
+| 3.3 | mux 背压用有界队列替代 C++ 的 `pause()` | 行为等价（读变慢即背压） | 保持现状 |
+| 4 | 协议无版本字段，锁定 `20260329` | 上游升级需同步 | 每次上游发版做 diff 并记录 |
+| 5 | `SO_SETFIB`（FreeBSD）未实现 | FreeBSD 多路由表不可用 | M5 |
+| 6 | `dashmap` 在 workspace 依赖中声明但未被任何 crate 使用 | 依赖膨胀 | 移除或接入 |
+| 7 | `ignore_destination_*` / `[custom_input*]` 映射转发未接入；mux `pre_connect_custom_address` 发送侧待补 | `ignore_*` 与自定义映射场景不可用 | M4 剩余 |
+| 8 | STUN / DDNS 未实现（已从 M4 移入 M6） | 公网地址探测与动态 DNS 不可用 | M6 |
 
 ---
 
-## 6. 下一步（M4）
+## 6. 下一步
 
 1. [x] 连续 1 小时稳定性与断线重连测试
 2. [x] 握手重试、超时清理、dead link 清理与 C++ 对照
-3. [x] 状态日志（status / messages）格式对齐（`ip_address.log` 待 STUN）
+3. [x] 状态日志（status / messages）格式对齐（`ip_address.log` 待 M6）
 4. [x] **UDP 转发**（`udp_timeout`、UDP 映射表）
 5. [x] **mux**：`mux_tunnels`、`mux_transfer` / `mux_cancel` / `pre_connect_custom_address`（发送侧待 `ignore_destination_*` 接入）
-6. [ ] **端口跳跃**：`dport_refresh`、`test_connection`、socket 切换
+6. [x] **端口跳跃**：`dport_refresh`、`test_connection`、socket 切换、服务端端口范围
 7. [x] FEC 接入发送/接收流水线
-8. [ ] STUN / DDNS / 带宽限制
-9. [ ] `ignore_destination_*`：客户端在 `initialise` 中携带目标地址（`request_initialise_packet_with_address`）
+8. [x] 带宽限制、`blast`、`ipv4_only` / `ipv6_only`
+9. [ ] `ignore_destination_*` 与 `[custom_input*]` 映射（M4 收尾）
+10. [ ] M5：relay、`--try`、平台适配、性能与发布
+11. [ ] M6：STUN、DDNS、`ip_address.log`
 
-完成标准：M4 验收表中的 UDP、mux、端口跳跃全部可用。
+完成标准：M4 验收表中的 UDP、mux、端口跳跃全部可用；STUN/DDNS 转入 M6。
 
 ---
 
@@ -290,6 +303,7 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 | 2026-10-31 | **M4 FEC**：新增 `transport::fec`（FecSender/FecReceiver），三种包层帧的解析与路由接入客户端/服务端；`fec=10:3` 下 32 KiB 数据与 C++ 双向互通；顺带修复 KCP 大消息缓冲过小的问题；测试增至 87 |
 | 2026-10-31 | **M4 mux**：新增 `transport::mux`（`MuxTunnel` / `MuxRecord` / 事件与命令队列）；客户端 `mux_tunnels` 共享通道、TCP/UDP 按 `connection_id` 复用；服务端 mux 会话、目标连接建立、`mux_cancel` 与 4 秒保留期、UDP 空闲回收、`pre_connect_custom_address`；`mux_tunnels=3` 下 3 路并发 TCP + 64 KiB + UDP 与 C++ 双向互通，mux+FEC 组合通过；测试增至 90 |
 | 2026-10-31 | docs: 按代码现状校准文档：更新 crate 清单、加密模式数量、代码行数与 FEC/mux 完成状态；补充 `ipv4_only`/`ipv6_only`、客户端目标选择、`blast`、带宽未应用等已知差异 |
+| 2026-10-31 | **M4 端口跳跃与默认参数**：服务端监听完整端口范围并共享会话表，按来源自动重绑；客户端 `dport_refresh` 探测与切换 socket、随机目标选择、只监听首个端口；接入 `blast`、带宽 `SetBandwidth` / `ResetWindowValues`、`ipv4_only` / `ipv6_only`；新增通道重绑、blast、带宽、地址族与 `port_hopping_keeps_connection` 测试；测试增至 96；STUN/DDNS 调整为 M6 |
 
 ---
 

@@ -9,19 +9,27 @@
 
 use crate::fec::{FecReceiver, FecSender};
 use crate::udp::UdpEndpoint;
-use crate::{IncomingFrame, KcpEndpoint, PacketCodec, TransportError, now_secs, parse_frame};
+use crate::{
+    IncomingFrame, KcpEndpoint, PacketCodec, TransportError, now_ms, now_secs, parse_frame,
+};
 use kcptube_kcp::{KcpConfig, KcpError};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 
 /// 一条完整的 KCP 数据通道。
+///
+/// 发送 socket 可以在运行期切换（端口跳跃），因此内部用共享单元保存；
+/// 接收方应通过 [`KcpChannel::socket`] 每次取当前 socket 的克隆。
 pub struct KcpChannel {
     pub codec: Arc<PacketCodec>,
     pub endpoint: Arc<KcpEndpoint>,
-    pub socket: UdpEndpoint,
+    socket: Arc<StdMutex<UdpEndpoint>>,
+    socket_addr: Arc<StdMutex<SocketAddr>>,
     peer: Arc<std::sync::Mutex<SocketAddr>>,
+    /// `blast`：发送后立即 flush（对应 C++ `Refresh()`）
+    blast: AtomicBool,
     /// 最近一次发送 `keep_alive` 的 Unix 秒（对应 C++ `keep_alive_send_time`）
     keep_alive_send_time: AtomicI64,
     /// 最近一次收到 `keep_alive_response` 的 Unix 秒（对应 C++ `keep_alive_response_time`）
@@ -56,7 +64,10 @@ impl KcpChannel {
         fec: Option<(u8, u8)>,
     ) -> Result<Self, TransportError> {
         let conv = config.conv;
+        let local_addr = socket.local_addr()?;
         let endpoint = Arc::new(KcpEndpoint::new(config, peer));
+        let socket_cell = Arc::new(StdMutex::new(socket));
+        let socket_addr = Arc::new(StdMutex::new(local_addr));
         let peer_cell = Arc::new(std::sync::Mutex::new(peer));
         let output_bytes = Arc::new(AtomicU64::new(0));
 
@@ -75,13 +86,17 @@ impl KcpChannel {
 
         {
             let codec = codec.clone();
-            let socket = socket.clone();
+            let socket_cell = socket_cell.clone();
             let peer_cell = peer_cell.clone();
             let output_bytes = output_bytes.clone();
             let fec_sender = fec_sender.clone();
             let mut kcp = endpoint.kcp.lock().await;
             kcp.set_output(Box::new(move |payload: &[u8]| {
                 let target = peer_cell.lock().map(|guard| *guard).unwrap_or(peer);
+                let socket = socket_cell
+                    .lock()
+                    .map_err(|_| KcpError::OutputFailed)?
+                    .clone();
 
                 let transmit = |datagram: Vec<u8>| -> Result<(), KcpError> {
                     output_bytes.fetch_add(datagram.len() as u64, Ordering::Relaxed);
@@ -117,8 +132,10 @@ impl KcpChannel {
         Ok(Self {
             codec,
             endpoint,
-            socket,
+            socket: socket_cell,
+            socket_addr,
             peer: peer_cell,
+            blast: AtomicBool::new(false),
             keep_alive_send_time: AtomicI64::new(now),
             keep_alive_response_time: AtomicI64::new(now),
             output_bytes,
@@ -151,14 +168,72 @@ impl KcpChannel {
         }
     }
 
+    /// 当前发送 socket 的克隆（端口跳跃后由上层重新获取）。
+    pub fn socket(&self) -> UdpEndpoint {
+        self.socket
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_else(|poisoned| poisoned.into_inner().clone())
+    }
+
     pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
-        self.socket.local_addr()
+        self.socket_addr
+            .lock()
+            .map(|guard| *guard)
+            .map_err(|_| std::io::Error::other("socket 地址锁已中毒"))
+    }
+
+    /// 设置 `blast`：为 `true` 时每次发送后立即 flush（对应 C++ `Refresh()`）。
+    pub fn set_blast(&self, enabled: bool) {
+        self.blast.store(enabled, Ordering::Relaxed);
+    }
+
+    /// 设置 KCP 带宽（对应 C++ `SetBandwidth`）。
+    pub async fn set_bandwidth(&self, outbound: u64, inbound: u64) {
+        let mut kcp = self.endpoint.kcp.lock().await;
+        kcp.set_bandwidth(outbound, inbound);
+    }
+
+    /// 按握手阶段的 SRTT 重置收发窗口（对应 C++ `ResetWindowValues`）。
+    pub async fn reset_window_values(&self, srtt: i32) {
+        let mut kcp = self.endpoint.kcp.lock().await;
+        kcp.reset_window_values(srtt);
+    }
+
+    /// 切换发送 socket 与对端，返回旧 socket。
+    ///
+    /// 用于端口跳跃：KCP 会话与 conv 保持不变，只把输出重定向到新 socket。
+    pub fn rebind(
+        &self,
+        socket: UdpEndpoint,
+        peer: SocketAddr,
+    ) -> Result<UdpEndpoint, TransportError> {
+        let local_addr = socket.local_addr()?;
+        // 先更新对端，避免新 socket 已就绪但输出仍指向旧地址的瞬时窗口
+        self.set_peer(peer);
+        let old = {
+            let mut guard = self
+                .socket
+                .lock()
+                .map_err(|_| TransportError::LockPoisoned)?;
+            std::mem::replace(&mut *guard, socket)
+        };
+        if let Ok(mut guard) = self.socket_addr.lock() {
+            *guard = local_addr;
+        }
+        Ok(old)
     }
 
     /// 上层发送数据
     pub async fn send(&self, data: &[u8]) -> Result<(), TransportError> {
         let mut kcp = self.endpoint.kcp.lock().await;
-        Ok(kcp.send(data)?)
+        kcp.send(data)?;
+        if self.blast.load(Ordering::Relaxed) {
+            let now = now_ms();
+            kcp.ensure_started(now);
+            let _ = kcp.flush(now);
+        }
+        Ok(())
     }
 
     /// 上层接收一条消息
@@ -227,7 +302,7 @@ impl KcpChannel {
 
     /// 从 socket 收一个数据报并直接交给 KCP
     pub async fn recv_and_process(&self, buffer: &mut [u8]) -> Result<usize, TransportError> {
-        let (size, _peer) = self.socket.recv_from(buffer).await?;
+        let (size, _peer) = self.socket().recv_from(buffer).await?;
         self.process_datagram(&buffer[..size]).await?;
         Ok(size)
     }
@@ -343,7 +418,7 @@ mod tests {
         let mut datagram = vec![0u8; 2048];
         let (size, _) = timeout(
             Duration::from_secs(1),
-            second.socket.recv_from(&mut datagram),
+            second.socket().recv_from(&mut datagram),
         )
         .await
         .expect("应收到加密数据报")
@@ -358,13 +433,126 @@ mod tests {
         second.update(1000).await.unwrap();
         let (size, _) = timeout(
             Duration::from_secs(1),
-            first.socket.recv_from(&mut datagram),
+            first.socket().recv_from(&mut datagram),
         )
         .await
         .expect("应收到 ACK")
         .unwrap();
         first.process_datagram(&datagram[..size]).await.unwrap();
         assert_eq!(first.waiting_for_send().await, 0);
+    }
+
+    #[tokio::test]
+    async fn blast_flushes_without_update() {
+        let first_socket = UdpEndpoint::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let second_socket = UdpEndpoint::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let first_addr = first_socket.local_addr().unwrap();
+        let second_addr = second_socket.local_addr().unwrap();
+
+        let codec = Arc::new(PacketCodec::new(EncryptionMode::AesGcm, "test-password"));
+        let first = KcpChannel::new(
+            codec.clone(),
+            config(0x2233_4455),
+            first_socket,
+            second_addr,
+        )
+        .await
+        .unwrap();
+        let second = KcpChannel::new(codec, config(0x2233_4455), second_socket, first_addr)
+            .await
+            .unwrap();
+
+        first.set_blast(true);
+        first.send(b"hello blast").await.unwrap();
+
+        let mut datagram = vec![0u8; 2048];
+        let (size, _) = timeout(
+            Duration::from_secs(1),
+            second.socket().recv_from(&mut datagram),
+        )
+        .await
+        .expect("blast=true 时发送应立即 flush")
+        .unwrap();
+        second.process_datagram(&datagram[..size]).await.unwrap();
+
+        let mut buffer = vec![0u8; 32];
+        assert_eq!(second.receive(&mut buffer).await.unwrap(), 11);
+        assert_eq!(&buffer[..11], b"hello blast");
+    }
+
+    #[tokio::test]
+    async fn bandwidth_resizes_windows() {
+        let socket = UdpEndpoint::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let channel = KcpChannel::new(
+            Arc::new(PacketCodec::new(EncryptionMode::AesGcm, "pw")),
+            config(1),
+            socket,
+            "127.0.0.1:9".parse().unwrap(),
+        )
+        .await
+        .unwrap();
+
+        channel.set_bandwidth(1_000_000, 2_000_000).await;
+        channel.reset_window_values(100).await;
+        let kcp = channel.endpoint.kcp.lock().await;
+        assert!(kcp.send_window_size() > 32);
+        assert!(kcp.receive_window_size() > 32);
+    }
+
+    #[tokio::test]
+    async fn rebind_switches_output_socket() {
+        let first_socket = UdpEndpoint::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let second_socket = UdpEndpoint::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let new_socket = UdpEndpoint::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let new_addr = new_socket.local_addr().unwrap();
+        let second_addr = second_socket.local_addr().unwrap();
+
+        let codec = Arc::new(PacketCodec::new(EncryptionMode::AesGcm, "pw"));
+        let first = KcpChannel::new(
+            codec.clone(),
+            config(0x3344_5566),
+            first_socket,
+            second_addr,
+        )
+        .await
+        .unwrap();
+        let second = KcpChannel::new(codec, config(0x3344_5566), second_socket, new_addr)
+            .await
+            .unwrap();
+
+        let old = first.rebind(new_socket, second_addr).unwrap();
+        assert_eq!(first.local_addr().unwrap(), new_addr);
+        assert_ne!(old.local_addr().unwrap(), new_addr);
+
+        first.send(b"after rebind").await.unwrap();
+        first.update(1000).await.unwrap();
+
+        let mut datagram = vec![0u8; 2048];
+        let (size, from) = timeout(
+            Duration::from_secs(1),
+            second.socket().recv_from(&mut datagram),
+        )
+        .await
+        .expect("重绑后应从新 socket 发出")
+        .unwrap();
+        assert_eq!(from, new_addr);
+        second.process_datagram(&datagram[..size]).await.unwrap();
+
+        let mut buffer = vec![0u8; 32];
+        assert_eq!(second.receive(&mut buffer).await.unwrap(), 12);
+        assert_eq!(&buffer[..12], b"after rebind");
     }
 
     #[tokio::test]
@@ -392,7 +580,7 @@ mod tests {
         let mut datagram = vec![0u8; 2048];
         let (size, _) = timeout(
             Duration::from_secs(1),
-            second.socket.recv_from(&mut datagram),
+            second.socket().recv_from(&mut datagram),
         )
         .await
         .unwrap()
