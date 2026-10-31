@@ -62,6 +62,9 @@ docs/          使用文档 + 移植计划/进度
 cargo build
 cargo test --workspace
 cargo run -p kcptube -- --help
+
+$env:CARGO_ZIGBUILD_ZIG_PATH = "D:\Program Files\Python313\Lib\site-packages\ziglang\zig.exe"
+cargo zigbuild --release --target x86_64-unknown-linux-musl
 ```
 
 
