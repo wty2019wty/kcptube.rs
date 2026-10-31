@@ -270,6 +270,14 @@ pub fn now_ms() -> u32 {
         .unwrap_or(0)
 }
 
+/// 当前系统时间（Unix 秒；对应 C++ `packet::right_now()`）
+pub fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

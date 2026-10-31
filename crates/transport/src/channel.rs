@@ -8,10 +8,11 @@
 //! 接收：UDP 数据报 → `PacketCodec::open`（解密 + 拆包 + 时间窗）→ `Kcp::input`
 
 use crate::udp::UdpEndpoint;
-use crate::{KcpEndpoint, PacketCodec, TransportError};
+use crate::{KcpEndpoint, PacketCodec, TransportError, now_secs};
 use kcptube_kcp::{KcpConfig, KcpError};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
 /// 一条完整的 KCP 数据通道。
 pub struct KcpChannel {
@@ -19,6 +20,14 @@ pub struct KcpChannel {
     pub endpoint: Arc<KcpEndpoint>,
     pub socket: UdpEndpoint,
     peer: Arc<std::sync::Mutex<SocketAddr>>,
+    /// 最近一次发送 `keep_alive` 的 Unix 秒（对应 C++ `keep_alive_send_time`）
+    keep_alive_send_time: AtomicI64,
+    /// 最近一次收到 `keep_alive_response` 的 Unix 秒（对应 C++ `keep_alive_response_time`）
+    keep_alive_response_time: AtomicI64,
+    /// 已发出的加密数据报字节数（用于状态日志的 `send (raw)`）
+    output_bytes: Arc<AtomicU64>,
+    /// 已交给 KCP 的负载字节数（用于状态日志的 `receive (inner)`）
+    input_bytes: Arc<AtomicU64>,
 }
 
 impl KcpChannel {
@@ -31,15 +40,18 @@ impl KcpChannel {
     ) -> Result<Self, TransportError> {
         let endpoint = Arc::new(KcpEndpoint::new(config, peer));
         let peer_cell = Arc::new(std::sync::Mutex::new(peer));
+        let output_bytes = Arc::new(AtomicU64::new(0));
 
         {
             let codec = codec.clone();
             let socket = socket.clone();
             let peer_cell = peer_cell.clone();
+            let output_bytes = output_bytes.clone();
             let mut kcp = endpoint.kcp.lock().await;
             kcp.set_output(Box::new(move |payload: &[u8]| {
                 let target = peer_cell.lock().map(|guard| *guard).unwrap_or(peer);
                 let datagram = codec.seal(payload).map_err(|_| KcpError::OutputFailed)?;
+                output_bytes.fetch_add(datagram.len() as u64, Ordering::Relaxed);
                 socket
                     .try_send_to(&datagram, target)
                     .map_err(|_| KcpError::OutputFailed)?;
@@ -47,11 +59,16 @@ impl KcpChannel {
             }));
         }
 
+        let now = now_secs();
         Ok(Self {
             codec,
             endpoint,
             socket,
             peer: peer_cell,
+            keep_alive_send_time: AtomicI64::new(now),
+            keep_alive_response_time: AtomicI64::new(now),
+            output_bytes,
+            input_bytes: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -97,6 +114,8 @@ impl KcpChannel {
 
     /// 处理一个已经解密、拆包后的 KCP 负载
     pub async fn input_payload(&self, payload: &[u8]) -> Result<(), TransportError> {
+        self.input_bytes
+            .fetch_add(payload.len() as u64, Ordering::Relaxed);
         let mut kcp = self.endpoint.kcp.lock().await;
         Ok(kcp.input(payload)?)
     }
@@ -128,6 +147,44 @@ impl KcpChannel {
     pub async fn peek_size(&self) -> i32 {
         let kcp = self.endpoint.kcp.lock().await;
         kcp.peek_size()
+    }
+
+    /// 最近一次收到数据的 Unix 秒（对应 C++ `KCP::LastInputTime()`）
+    pub async fn last_input_time(&self) -> i64 {
+        let kcp = self.endpoint.kcp.lock().await;
+        kcp.last_input_time()
+    }
+
+    /// KCP 平滑 RTT（毫秒），用于状态日志
+    pub async fn rx_srtt(&self) -> i32 {
+        let kcp = self.endpoint.kcp.lock().await;
+        kcp.rx_srtt()
+    }
+
+    pub fn keep_alive_send_time(&self) -> i64 {
+        self.keep_alive_send_time.load(Ordering::Relaxed)
+    }
+
+    pub fn keep_alive_response_time(&self) -> i64 {
+        self.keep_alive_response_time.load(Ordering::Relaxed)
+    }
+
+    pub fn mark_keep_alive_sent(&self, at: i64) {
+        self.keep_alive_send_time.store(at, Ordering::Relaxed);
+    }
+
+    pub fn mark_keep_alive_response(&self, at: i64) {
+        self.keep_alive_response_time.store(at, Ordering::Relaxed);
+    }
+
+    /// 取出并清零「已发出的加密字节数」
+    pub fn take_output_bytes(&self) -> u64 {
+        self.output_bytes.swap(0, Ordering::Relaxed)
+    }
+
+    /// 取出并清零「已收到的 KCP 负载字节数」
+    pub fn take_input_bytes(&self) -> u64 {
+        self.input_bytes.swap(0, Ordering::Relaxed)
     }
 }
 

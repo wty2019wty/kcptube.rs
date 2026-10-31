@@ -30,6 +30,12 @@
 
 `Cargo.lock` 中的第三方 crate 主要采用 MIT / Apache-2.0 双许可，二者均与 GPLv3 兼容，可安全并入本项目。新增依赖时请确认其许可证为 GPLv3 兼容（MIT、Apache-2.0、BSD、ISC、Zlib、Unlicense 等），**不得**引入 GPL 不兼容的许可证（如专有许可、CDDL、仅 GPLv2 等）。
 
+除通用依赖外，以下直接依赖值得单独记录：
+
+| crate | 许可证 | 用途 |
+|---|---|---|
+| `chrono` | MIT OR Apache-2.0 | `crates/logging` 的本地时间格式化（对齐 C++ `std::put_time("%F %T %z")`） |
+
 建议用以下命令复核依赖许可证：
 
 ```bash

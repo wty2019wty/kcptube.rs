@@ -1,0 +1,12 @@
+[package]
+name = "kcptube-logging"
+description = "kcptube 日志输出（messages / status / ip 三类文件）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+chrono.workspace = true
+thiserror.workspace = true

@@ -17,6 +17,7 @@ kcptube-crypto = { path = "crates/crypto" }
 kcptube-fec = { path = "crates/fec" }
 kcptube-kcp = { path = "crates/kcp" }
 kcptube-config = { path = "crates/config" }
+kcptube-logging = { path = "crates/logging" }
 kcptube-transport = { path = "crates/transport" }
 kcptube-client = { path = "crates/client" }
 kcptube-server = { path = "crates/server" }
@@ -39,6 +40,7 @@ clap = { version = "4.5", features = ["derive"] }
 anyhow = "1"
 thiserror = "2"
 # 日志
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # 网络与通用工具
