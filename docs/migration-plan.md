@@ -489,7 +489,7 @@ CI（`.github/workflows/rust.yml`）在 ubuntu 与 windows 上执行上述命令
 
 ---
 
-## 附录 A：常用命令
+## 附录：常用命令
 
 ```bash
 # 构建与测试
@@ -504,11 +504,3 @@ cmake --build build/legacy -j
 # 配置检查（Rust 版）
 cargo run -p kcptube -- --check-config service/config_sample_client.conf
 ```
-
-## 附录 B：里程碑验收清单
-
-- [x] M1：所有协议向量测试通过，配置样例可解析
-- [x] M2：KCP 回环通过，丢包测试通过
-- [ ] M3：Rust/C++ 双向 TCP 互通，1 小时稳定性
-- [ ] M4：UDP + mux + 端口跳跃 + STUN 全部可用
-- [ ] M5：relay/tester 可用，性能达标，双平台 CI 绿
