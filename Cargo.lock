@@ -438,6 +438,7 @@ dependencies = [
 name = "kcptube-kcp"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "thiserror",
 ]
 
@@ -474,6 +475,7 @@ dependencies = [
 name = "kcptube-transport"
 version = "0.1.0"
 dependencies = [
+ "kcptube-crypto",
  "kcptube-kcp",
  "kcptube-protocol",
  "thiserror",

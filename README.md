@@ -11,9 +11,9 @@
 | 协议包层（`crates/protocol`） | 🟢 包层/数据层/mux/settings_wrapper 编解码完成 |
 | 加密层（`crates/crypto`） | 🟢 5 种模式全部与 Botan 3.13 逐字节一致 |
 | FEC（`crates/fec`） | 🟢 ZFEC 与 Botan share 逐字节一致，含 `fec_container` |
-| KCP（`crates/kcp`） | 🟡 配置/接口已定，ikcp 移植待完成 |
+| KCP（`crates/kcp`） | 🟢 ikcp 全量移植，与 C++ 输出逐字节对撞 |
 | 配置解析（`crates/config`） | 🟢 完整解析与校验，`--check-config` 可用 |
-| 传输层（`crates/transport`） | 🟡 接口已定（tokio） |
+| 传输层（`crates/transport`） | 🟡 KCP 调度器与加密包层完成；TCP/UDP 会话待实现 |
 | client / server / relay | 🟡 仅入口 |
 | 连通性测试（`--try`） | 🟡 未实现 |
 

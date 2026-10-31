@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 kcptube-kcp.workspace = true
 kcptube-protocol.workspace = true
+kcptube-crypto.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

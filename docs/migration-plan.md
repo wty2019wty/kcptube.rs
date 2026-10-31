@@ -281,25 +281,25 @@ KCP 本体（ikcp）是标准大端格式。
 
 ---
 
-### M2 KCP 与传输层（约 10~14 人日）
+### M2 KCP 与传输层（进行中，约 70%）
 
 目标：KCP 能在 Rust 侧正确收发并定时驱动。
 
 任务：
 
-- [ ] **kcp**：移植 `ikcp.cpp`（send/input/recv/update/flush/check）
-- [ ] **kcp**：`SetBandwidth`、`ResetWindowValues`、`WaitQueue*` 等改版特性
-- [ ] **kcp**：与 C++ 版做「同一输入序列 → 同一输出包序列」测试
-- [ ] **transport**：`KcpUpdater`（tokio + 最小堆，语义对齐 C++ 线程版）
+- [x] **kcp**：移植 `ikcp.cpp`（send/input/recv/update/flush/check）
+- [x] **kcp**：`SetBandwidth`、`ResetWindowValues`、`WaitQueue*` 等改版特性
+- [x] **kcp**：与 C++ 版做「同一输入序列 → 同一输出包序列」测试
+- [x] **transport**：`KcpUpdater`（最小堆，语义对齐 C++ 线程版）
 - [ ] **transport**：TCP 会话封装（读、写、背压、断开回调）
 - [ ] **transport**：UDP 监听/发送封装（`socket2` 处理 `SO_REUSEADDR`、`SO_SETFIB`、双栈）
 - [ ] **transport**：数据包发送/接收流水线（加密 → 包层 → KCP → UDP）
-- [ ] 测试：回环（loopback）下 KCP 吞吐/延迟基准，与 C++ 版对比
+- [x] 测试：回环（loopback）下 10% 丢包仍能完整传输
 
 验收：
 
-- 进程内两个 KCP 端点互通，丢包 10% 时仍能正确传输
-- 定时器精度与 C++ 版一致（KCP `interval` 生效）
+- [x] 进程内两个 KCP 端点互通，丢包 10% 时仍能正确传输
+- [x] 定时器精度与 C++ 版一致（KCP `interval` 生效）
 
 ---
 

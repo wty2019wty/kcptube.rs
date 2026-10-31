@@ -9,3 +9,6 @@ repository.workspace = true
 
 [dependencies]
 thiserror.workspace = true
+
+[dev-dependencies]
+hex.workspace = true
