@@ -338,7 +338,7 @@ KCP 本体（ikcp）是标准大端格式。
 - [x] **UDP 转发**（`udp_timeout`、按本地源地址的 UDP 映射表）
 - [x] **mux**：`mux_tunnels`、`mux_transfer` / `mux_cancel` / `pre_connect_custom_address`（发送侧待 `ignore_destination_*` 接入）
 - [x] **mux**：缓存队列与背压（有界 `mpsc` 替代 `mux_tcp_cache` / `mux_udp_cache` 的 `deque` + `pause()`）
-- [x] **端口跳跃**：`dport_refresh`、`test_connection`、socket 切换、旧 socket 延迟回收；服务端监听完整端口范围并共享会话表（Rust ↔ Rust 已自动化，C++ 互通待补测）
+- [x] **端口跳跃**：`dport_refresh`、`test_connection`、socket 切换、旧 socket 延迟回收；服务端监听完整端口范围并共享会话表（已与 C++ 双向互通：Rust 客户端↔C++ 服务端 TCP/UDP、C++ 客户端↔Rust 服务端 UDP）
 - [x] **带宽限制**：`inbound_bandwidth` / `outbound_bandwidth` 接入 `Kcp::set_bandwidth` 与 `ResetWindowValues`
 - [x] **`blast`**：发送后按配置立即 flush（对应 C++ `Refresh()`）
 - [x] **`ipv4_only` / `ipv6_only`**：监听地址族与目标解析按配置生效

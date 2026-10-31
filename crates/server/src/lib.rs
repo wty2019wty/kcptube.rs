@@ -18,8 +18,8 @@ use kcptube_protocol::constant::{
 };
 use kcptube_protocol::packet::{
     Feature, ProtocolType, SettingsWrapper, create_data_packet, create_keep_alive_packet,
-    create_keep_alive_response_packet, inform_disconnect_packet, inform_error_packet,
-    inform_mux_cancel_packet, response_initialise_packet, unpack_inner,
+    create_keep_alive_response_packet, create_test_connection_packet, inform_disconnect_packet,
+    inform_error_packet, inform_mux_cancel_packet, response_initialise_packet, unpack_inner,
 };
 use kcptube_transport::{
     IncomingFrame, KcpChannel, MAX_INNER_MESSAGE, MuxEvent, MuxRecord, MuxSink, MuxTcpSink,
@@ -358,10 +358,10 @@ impl SocketState {
                     entry.established.store(true, Ordering::SeqCst);
                 }
                 Feature::KeepAlive => {
-                    entry
-                        .channel
-                        .send(&create_keep_alive_response_packet(protocol))
-                        .await?;
+                    // 握手通道上的 feature 3 在 C++ 里按 `test_connection` 处理，
+                    // 服务端应原样回一个 test_connection（对应 `server.cpp` 的同名分支）；
+                    // 回 `keep_alive_response` 会让 C++ 客户端的端口探测无法确认成功。
+                    entry.channel.send(&create_test_connection_packet()).await?;
                 }
                 _ => {}
             }
@@ -740,11 +740,17 @@ impl SocketState {
         // 立即把回包 socket 与对端重定向到新位置（对应 C++ `ingress_listener`
         // 与 `ingress_source_endpoint` 的更新）。
         let socket_changed = session.channel.local_addr().ok() != Some(listener_addr);
+        let peer_changed = session.channel.peer() != peer;
         if socket_changed {
             let old = session.channel.rebind(socket.clone(), peer)?;
             drop(old);
         } else {
             session.channel.set_peer(peer);
+        }
+        if socket_changed || peer_changed {
+            self.log_message(&format!(
+                "conv={conv} 端口跳跃：监听 {listener_addr}，对端 {peer}"
+            ));
         }
         session.channel.accept_frame(frame).await?;
         tracing::trace!("收到 conv={conv} 的数据帧");

@@ -11,7 +11,7 @@
 | 指标 | 数值 |
 |---|---|
 | C++ 参考实现 | 14,308 行（`legacy-cpp/`，含 ikcp 1,109 行） |
-| Rust 代码 | 约 9,903 行（22 个 `.rs` 文件，非空行） |
+| Rust 代码 | 约 9,912 行（22 个 `.rs` 文件，非空行） |
 | crate 数 | 11（10 个 lib + 1 个 bin） |
 | 单元/集成测试 | 96 个，全部通过 |
 | 整体完成度 | **M0~M3 完成，M4 约 85%** |
@@ -221,7 +221,16 @@ Rust 输出完全一致，见 `crates/fec/src/lib.rs::vectors_match_botan_zfec`�
 - [x] **带宽**：握手 / 数据通道调用 `Kcp::set_bandwidth`，并用握手 SRTT 执行 `ResetWindowValues`
 - [x] **`ipv4_only` / `ipv6_only`**：监听 socket 地址族、`listen_on` 校验与目标解析按配置生效
 - [x] 互通验证：`interop.rs::port_hopping_keeps_connection`（`dport_refresh=1` 下跨越多次跳跃继续收发）
-- [ ] 与 C++ 客户端/服务端的端口跳跃互通（当前自动化覆盖为 Rust ↔ Rust）
+- [x] 服务端握手通道对 feature 3 回 `test_connection`（与 C++ `server.cpp` 一致），修复 C++ 客户端端口探测无法确认的问题
+- [x] 与 C++ 双向互通：
+  - Rust 客户端 → **C++ 服务端**（TCP）：Rust 客户端日志记录 2 次跳跃，跨越跳跃持续收发
+  - Rust 客户端 → **C++ 服务端**（UDP）：同样跨越 2 次跳跃持续收发
+  - **C++ 客户端** → Rust 服务端（UDP）：C++ 客户端空闲后触发探测，Rust 服务端记录 2 次重绑，跨越跳跃持续收发
+
+> 与 C++ 的语义差异：C++ 的 `loop_find_expires` 会跳过 TCP 通道，且只在
+> `keep_alive_timed_out`（链路空闲/疑似超时）后才尝试换端口，`dport_refresh`
+> 实际是两次尝试的最小间隔；Rust 目前对所有数据通道按 `dport_refresh`
+> 周期主动跳跃。两者互通无碍，但跳跃时机与协议范围不同，见已知问题。
 
 ---
 
@@ -267,6 +276,7 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 | 6 | `dashmap` 在 workspace 依赖中声明但未被任何 crate 使用 | 依赖膨胀 | 移除或接入 |
 | 7 | `ignore_destination_*` / `[custom_input*]` 映射转发未接入；mux `pre_connect_custom_address` 发送侧待补 | `ignore_*` 与自定义映射场景不可用 | M4 剩余 |
 | 8 | STUN / DDNS 未实现（已从 M4 移入 M6） | 公网地址探测与动态 DNS 不可用 | M6 |
+| 9 | 端口跳跃时机不同：Rust 对所有数据通道按 `dport_refresh` 周期主动跳跃；C++ 跳过 TCP，且仅在链路空闲超时后探测 | 与 C++ 的跳跃频率/触发条件不一致，可能影响 QoS 观察 | 评估是否对齐 C++ 或保留现状并文档说明 |
 
 ---
 
@@ -304,6 +314,7 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 | 2026-10-31 | **M4 mux**：新增 `transport::mux`（`MuxTunnel` / `MuxRecord` / 事件与命令队列）；客户端 `mux_tunnels` 共享通道、TCP/UDP 按 `connection_id` 复用；服务端 mux 会话、目标连接建立、`mux_cancel` 与 4 秒保留期、UDP 空闲回收、`pre_connect_custom_address`；`mux_tunnels=3` 下 3 路并发 TCP + 64 KiB + UDP 与 C++ 双向互通，mux+FEC 组合通过；测试增至 90 |
 | 2026-10-31 | docs: 按代码现状校准文档：更新 crate 清单、加密模式数量、代码行数与 FEC/mux 完成状态；补充 `ipv4_only`/`ipv6_only`、客户端目标选择、`blast`、带宽未应用等已知差异 |
 | 2026-10-31 | **M4 端口跳跃与默认参数**：服务端监听完整端口范围并共享会话表，按来源自动重绑；客户端 `dport_refresh` 探测与切换 socket、随机目标选择、只监听首个端口；接入 `blast`、带宽 `SetBandwidth` / `ResetWindowValues`、`ipv4_only` / `ipv6_only`；新增通道重绑、blast、带宽、地址族与 `port_hopping_keeps_connection` 测试；测试增至 96；STUN/DDNS 调整为 M6 |
+| 2026-10-31 | **C++ 互通验证**：Rust 客户端→C++ 服务端（TCP/UDP）均跨越 2 次跳跃持续收发；C++ 客户端→Rust 服务端 UDP 跨越跳跃持续收发。期间修复服务端握手通道把 `test_connection` 错回为 `keep_alive_response` 的兼容性问题；记录 C++ 端口跳跃仅覆盖 UDP/mux 且由空闲超时触发的语义差异 |
 
 ---
 
