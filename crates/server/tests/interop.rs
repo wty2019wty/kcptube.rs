@@ -9,8 +9,8 @@ use kcptube_client::Client;
 use kcptube_config::UserSettings;
 use kcptube_server::Server;
 use std::collections::HashSet;
-use std::net::TcpListener as StdTcpListener;
 use std::net::UdpSocket as StdUdpSocket;
+use std::net::{SocketAddr, TcpListener as StdTcpListener};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -130,6 +130,69 @@ struct PairOptions {
     keep_alive: u16,
     fec: Option<(u8, u8)>,
     mux_tunnels: u16,
+    /// 非 0 时在客户端与服务端之间插入一个每 `drop_every` 个报文丢 1 个的 UDP 代理
+    drop_every: u32,
+}
+
+/// 进程内 UDP 丢包代理：每 `drop_every` 个报文丢 1 个（双向共用一个计数器），
+/// 用于验证 FEC 在人为丢包下的恢复能力。
+async fn lossy_proxy(server_port: u16, drop_every: u32) -> (u16, Vec<JoinHandle<()>>) {
+    let client_side = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let server_side = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let proxy_port = client_side.local_addr().unwrap().port();
+
+    let client_side = std::sync::Arc::new(client_side);
+    let server_side = std::sync::Arc::new(server_side);
+    let last_client = std::sync::Arc::new(Mutex::new(None::<SocketAddr>));
+    let counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+
+    let upstream = {
+        let client_side = client_side.clone();
+        let server_side = server_side.clone();
+        let last_client = last_client.clone();
+        let counter = counter.clone();
+        tokio::spawn(async move {
+            let mut buffer = vec![0u8; 65536];
+            loop {
+                let Ok((size, peer)) = client_side.recv_from(&mut buffer).await else {
+                    break;
+                };
+                *last_client.lock().expect("代理锁被污染") = Some(peer);
+                let count = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if count % drop_every == 0 {
+                    continue;
+                }
+                let _ = server_side
+                    .send_to(&buffer[..size], ("127.0.0.1", server_port))
+                    .await;
+            }
+        })
+    };
+
+    let downstream = {
+        let client_side = client_side.clone();
+        let server_side = server_side.clone();
+        let last_client = last_client.clone();
+        let counter = counter.clone();
+        tokio::spawn(async move {
+            let mut buffer = vec![0u8; 65536];
+            loop {
+                let Ok((size, _)) = server_side.recv_from(&mut buffer).await else {
+                    break;
+                };
+                let count = counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if count % drop_every == 0 {
+                    continue;
+                }
+                let peer = *last_client.lock().expect("代理锁被污染");
+                if let Some(peer) = peer {
+                    let _ = client_side.send_to(&buffer[..size], peer).await;
+                }
+            }
+        })
+    };
+
+    (proxy_port, vec![upstream, downstream])
 }
 
 async fn start_pair_with_options(options: PairOptions) -> (u16, Vec<JoinHandle<()>>) {
@@ -137,10 +200,21 @@ async fn start_pair_with_options(options: PairOptions) -> (u16, Vec<JoinHandle<(
         keep_alive,
         fec,
         mux_tunnels,
+        drop_every,
     } = options;
     let (echo_port, echo_tasks) = echo_server().await;
     let server_port = allocate_ports(1);
     let client_port = allocate_ports(1);
+
+    // 需要丢包时，客户端连到代理端口，由代理转发到真实服务端
+    let mut proxy_tasks = Vec::new();
+    let client_target_port = if drop_every > 0 {
+        let (proxy_port, tasks) = lossy_proxy(server_port, drop_every).await;
+        proxy_tasks = tasks;
+        proxy_port
+    } else {
+        server_port
+    };
 
     let fec_line = fec
         .map(|(original, redundant)| format!("fec={original}:{redundant}\n"))
@@ -168,7 +242,7 @@ async fn start_pair_with_options(options: PairOptions) -> (u16, Vec<JoinHandle<(
          listen_on=127.0.0.1\n\
          listen_port={client_port}\n\
          destination_address=127.0.0.1\n\
-         destination_port={server_port}\n\
+         destination_port={client_target_port}\n\
          encryption_password=test-password\n\
          encryption_algorithm=AES-GCM\n\
          kcp=regular3\n\
@@ -190,6 +264,7 @@ async fn start_pair_with_options(options: PairOptions) -> (u16, Vec<JoinHandle<(
     tokio::time::sleep(Duration::from_millis(400)).await;
 
     let mut tasks = vec![server_task, client_task];
+    tasks.extend(proxy_tasks);
     tasks.extend(echo_tasks);
     (client_port, tasks)
 }
@@ -298,6 +373,25 @@ async fn fec_tcp_roundtrip() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fec_recovers_under_packet_loss() {
+    // 每 10 个 UDP 报文丢 1 个（双向），验证 FEC 冗余能减少重传并完整送达。
+    let (client_port, tasks) = start_pair_with_options(PairOptions {
+        fec: Some((4, 2)),
+        drop_every: 10,
+        ..PairOptions::default()
+    })
+    .await;
+
+    let result = tokio::time::timeout(Duration::from_secs(40), async {
+        bulk_roundtrip(client_port, 32 * 1024).await;
+    })
+    .await;
+
+    stop(tasks);
+    result.expect("FEC 开启时 10% 丢包下 32 KiB 数据应完整到达");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mux_tcp_and_udp_roundtrip() {
     // 两条共享隧道，本地 TCP/UDP 连接按 connection_id 复用
     let (client_port, tasks) = start_pair_with_options(PairOptions {
@@ -344,6 +438,183 @@ async fn mux_tcp_and_udp_roundtrip() {
 
     stop(tasks);
     result.expect("mux 模式应在 20 秒内完成 TCP/UDP 往返");
+}
+
+/// `ignore_listen_*` + `[custom_input*]`：客户端只在映射端口监听，
+/// 目标地址随握手包交给服务端；服务端忽略自己的 destination 配置。
+///
+/// `ignore_address` 选择服务端用 `destination_address={}` 还是
+/// `destination_port={}` 来关闭默认目标，两者在 C++ 里走同一个判断。
+async fn start_custom_input_pair(
+    mux_tunnels: u16,
+    ignore_address: bool,
+) -> (u16, Vec<JoinHandle<()>>) {
+    let (echo_port, echo_tasks) = echo_server().await;
+    let server_port = allocate_ports(1);
+    let client_port = allocate_ports(1);
+
+    let server_destination = if ignore_address {
+        "destination_address={}\n".to_string()
+    } else {
+        "destination_port={}\n".to_string()
+    };
+    let server_settings = settings(&format!(
+        "mode=server\n\
+         listen_on=127.0.0.1\n\
+         listen_port={server_port}\n\
+         {server_destination}\
+         encryption_password=test-password\n\
+         encryption_algorithm=AES-GCM\n\
+         kcp=regular3\n\
+         keep_alive=0\n"
+    ));
+    let mux_line = if mux_tunnels > 0 {
+        format!("mux_tunnels={mux_tunnels}\n")
+    } else {
+        String::new()
+    };
+    let client_settings = settings(&format!(
+        "mode=client\n\
+         listen_port={{}}\n\
+         destination_address=127.0.0.1\n\
+         destination_port={server_port}\n\
+         encryption_password=test-password\n\
+         encryption_algorithm=AES-GCM\n\
+         kcp=regular3\n\
+         {mux_line}\
+         keep_alive=0\n\
+         [custom_input]\n\
+         127.0.0.1:{client_port}->127.0.0.1:{echo_port}\n"
+    ));
+
+    let server_task = tokio::spawn(async move {
+        let _ = Server::new(server_settings).run().await;
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let client_task = tokio::spawn(async move {
+        let _ = Client::new(client_settings).run().await;
+    });
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    let mut tasks = vec![server_task, client_task];
+    tasks.extend(echo_tasks);
+    (client_port, tasks)
+}
+
+/// 通过 `[custom_input]` 映射端口做一次 UDP 往返。
+async fn custom_udp_exchange(client_port: u16) {
+    let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    socket.connect(("127.0.0.1", client_port)).await.unwrap();
+    let mut buffer = vec![0u8; 2048];
+    for index in 0..3u8 {
+        let message = format!("custom udp #{index}");
+        let mut received = None;
+        for _ in 0..20 {
+            socket.send(message.as_bytes()).await.unwrap();
+            match tokio::time::timeout(Duration::from_millis(300), socket.recv(&mut buffer)).await {
+                Ok(Ok(size)) => {
+                    received = Some(buffer[..size].to_vec());
+                    break;
+                }
+                _ => continue,
+            }
+        }
+        let received = received.expect("应在 6 秒内收到 UDP 回显");
+        assert_eq!(received, message.as_bytes());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn custom_input_tcp_roundtrip() {
+    let (client_port, tasks) = start_custom_input_pair(0, false).await;
+    let result = tokio::time::timeout(Duration::from_secs(15), async {
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", client_port))
+            .await
+            .unwrap();
+        let (mut reader, mut writer) = stream.split();
+        exchange(&mut reader, &mut writer, "custom tcp", 3).await;
+    })
+    .await;
+
+    stop(tasks);
+    result.expect("custom_input 映射的 TCP 往返应在 15 秒内完成");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn custom_input_udp_roundtrip() {
+    let (client_port, tasks) = start_custom_input_pair(0, false).await;
+    let result =
+        tokio::time::timeout(Duration::from_secs(15), custom_udp_exchange(client_port)).await;
+
+    stop(tasks);
+    result.expect("custom_input 映射的 UDP 往返应在 15 秒内完成");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn custom_input_ignore_destination_address() {
+    // 服务端用 `destination_address={}`（而不是 `destination_port={}`）关闭
+    // 默认目标：C++ 对这两个开关走同一个判断，目标完全由客户端映射决定。
+    let (client_port, tasks) = start_custom_input_pair(0, true).await;
+    let result = tokio::time::timeout(Duration::from_secs(15), async {
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", client_port))
+            .await
+            .unwrap();
+        let (mut reader, mut writer) = stream.split();
+        exchange(&mut reader, &mut writer, "ignore address", 3).await;
+    })
+    .await;
+
+    stop(tasks);
+    result.expect("ignore_destination_address 下 TCP 往返应在 15 秒内完成");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn custom_input_mux_roundtrip() {
+    // mux 模式下目标地址通过 `pre_connect_custom_address` 下发，
+    // 与 C++ `mux_tell_server_connect_address` 的行为对齐。
+    let (client_port, tasks) = start_custom_input_pair(1, false).await;
+    let result = tokio::time::timeout(Duration::from_secs(20), async {
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", client_port))
+            .await
+            .unwrap();
+        let (mut reader, mut writer) = stream.split();
+        exchange(&mut reader, &mut writer, "custom mux tcp", 3).await;
+        custom_udp_exchange(client_port).await;
+    })
+    .await;
+
+    stop(tasks);
+    result.expect("custom_input + mux 的 TCP/UDP 往返应在 20 秒内完成");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mux_hundred_concurrent_tcp() {
+    // M4 验收：mux 下 100 并发 TCP 连接稳定。
+    let (client_port, tasks) = start_pair_with_options(PairOptions {
+        mux_tunnels: 4,
+        ..PairOptions::default()
+    })
+    .await;
+
+    let result = tokio::time::timeout(Duration::from_secs(60), async {
+        let mut handles = Vec::new();
+        for index in 0..100u32 {
+            handles.push(tokio::spawn(async move {
+                let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", client_port))
+                    .await
+                    .unwrap();
+                let (mut reader, mut writer) = stream.split();
+                exchange(&mut reader, &mut writer, &format!("conn {index}"), 2).await;
+            }));
+        }
+        for handle in handles {
+            handle.await.expect("并发连接任务不应 panic");
+        }
+    })
+    .await;
+
+    stop(tasks);
+    result.expect("100 并发 mux TCP 连接应在 60 秒内全部完成");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

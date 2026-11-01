@@ -1585,8 +1585,78 @@ fn data_config(settings: &UserSettings, conv: u32) -> KcpConfig {
 mod tests {
     use super::*;
 
+    fn parse(text: &str) -> UserSettings {
+        let lines: Vec<String> = text.lines().map(str::to_string).collect();
+        UserSettings::parse_lines(&lines).expect("测试配置应合法")
+    }
+
     #[test]
     fn handshake_timeout_matches_cpp() {
         assert_eq!(HANDSHAKE_TIMEOUT, 30);
+    }
+
+    #[test]
+    fn listen_specs_regular_listen() {
+        let settings = parse(
+            "mode=client\n\
+             listen_on=127.0.0.1\n\
+             listen_port=5000\n\
+             destination_address=127.0.0.1\n\
+             destination_port=6000\n\
+             encryption_password=p\n\
+             encryption_algorithm=aes-gcm\n",
+        );
+        let specs = build_listen_specs(&settings).expect("应能生成监听项");
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].address, "127.0.0.1:5000".parse().unwrap());
+        assert!(specs[0].tcp && specs[0].udp);
+        assert!(specs[0].remote.is_none());
+    }
+
+    #[test]
+    fn listen_specs_from_custom_input_sections() {
+        let settings = parse(
+            "mode=client\n\
+             listen_port={}\n\
+             destination_address=127.0.0.1\n\
+             destination_port=6000\n\
+             encryption_password=p\n\
+             encryption_algorithm=aes-gcm\n\
+             [custom_input_tcp]\n\
+             127.0.0.1:7001->127.0.0.1:8080\n\
+             [custom_input_udp]\n\
+             127.0.0.1:7002->127.0.0.1:8081\n",
+        );
+        let specs = build_listen_specs(&settings).expect("应能生成监听项");
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].address, "127.0.0.1:7001".parse().unwrap());
+        assert!(specs[0].tcp && !specs[0].udp);
+        assert_eq!(
+            specs[0].remote.as_deref().map(|item| item.0.as_str()),
+            Some("127.0.0.1")
+        );
+        assert_eq!(specs[0].remote.as_ref().map(|item| item.1), Some(8080));
+        assert_eq!(specs[1].address, "127.0.0.1:7002".parse().unwrap());
+        assert!(!specs[1].tcp && specs[1].udp);
+        assert_eq!(specs[1].remote.as_ref().map(|item| item.1), Some(8081));
+    }
+
+    #[test]
+    fn listen_specs_skip_ipv6_mapping_under_ipv4_only() {
+        let settings = parse(
+            "mode=client\n\
+             listen_port={}\n\
+             ipv4_only=yes\n\
+             destination_address=127.0.0.1\n\
+             destination_port=6000\n\
+             encryption_password=p\n\
+             encryption_algorithm=aes-gcm\n\
+             [custom_input]\n\
+             [::1]:7003->127.0.0.1:8080\n\
+             127.0.0.1:7004->127.0.0.1:8080\n",
+        );
+        let specs = build_listen_specs(&settings).expect("应能生成监听项");
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].address, "127.0.0.1:7004".parse().unwrap());
     }
 }
