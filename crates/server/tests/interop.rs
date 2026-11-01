@@ -7,6 +7,7 @@
 
 use kcptube_client::Client;
 use kcptube_config::UserSettings;
+use kcptube_relay::Relay;
 use kcptube_server::Server;
 use std::collections::HashSet;
 use std::net::UdpSocket as StdUdpSocket;
@@ -778,4 +779,129 @@ async fn mux_client_queues_until_server_starts() {
     tasks.extend(echo_tasks);
     stop(tasks);
     result.expect("服务端后启动时，客户端应保留本地连接并在建链后完成转发");
+}
+
+/// 启动「echo + 服务端 + relay + 客户端」四段，客户端连到 relay。
+///
+/// 拓扑：`client --(A)--> relay --(B)--> server --> echo`，
+/// 两段的加密/KCP 参数故意不同，用来验证 relay 会按段各自解码与重编码。
+async fn start_relay_pair(keep_alive: u16) -> (u16, Vec<JoinHandle<()>>) {
+    let (echo_port, echo_tasks) = echo_server().await;
+    let server_port = allocate_ports(1);
+    let relay_port = allocate_ports(1);
+    let client_port = allocate_ports(1);
+
+    let server_settings = settings(&format!(
+        "mode=server\n\
+         listen_on=127.0.0.1\n\
+         listen_port={server_port}\n\
+         destination_address=127.0.0.1\n\
+         destination_port={echo_port}\n\
+         encryption_password=server-password\n\
+         encryption_algorithm=AES-OCB\n\
+         kcp=regular3\n\
+         keep_alive={keep_alive}\n"
+    ));
+    // [listener] 面向客户端：AES-GCM + regular3
+    // [forwarder] 面向服务端：AES-OCB + fast3
+    let relay_settings = settings(&format!(
+        "mode=relay\n\
+         [listener]\n\
+         listen_on=127.0.0.1\n\
+         listen_port={relay_port}\n\
+         encryption_password=client-password\n\
+         encryption_algorithm=AES-GCM\n\
+         kcp=regular3\n\
+         keep_alive={keep_alive}\n\
+         [forwarder]\n\
+         destination_address=127.0.0.1\n\
+         destination_port={server_port}\n\
+         encryption_password=server-password\n\
+         encryption_algorithm=AES-OCB\n\
+         kcp=fast3\n\
+         keep_alive={keep_alive}\n"
+    ));
+    let client_settings = settings(&format!(
+        "mode=client\n\
+         listen_on=127.0.0.1\n\
+         listen_port={client_port}\n\
+         destination_address=127.0.0.1\n\
+         destination_port={relay_port}\n\
+         encryption_password=client-password\n\
+         encryption_algorithm=AES-GCM\n\
+         kcp=regular3\n\
+         keep_alive={keep_alive}\n"
+    ));
+
+    let server_task = tokio::spawn(async move {
+        let _ = Server::new(server_settings).run().await;
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let relay_task = tokio::spawn(async move {
+        let _ = Relay::new(relay_settings).run().await;
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let client_task = tokio::spawn(async move {
+        let _ = Client::new(client_settings).run().await;
+    });
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    let mut tasks = vec![server_task, relay_task, client_task];
+    tasks.extend(echo_tasks);
+    (client_port, tasks)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn relay_tcp_roundtrip() {
+    let (client_port, tasks) = start_relay_pair(0).await;
+    let result = tokio::time::timeout(Duration::from_secs(20), async {
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", client_port))
+            .await
+            .unwrap();
+        let (mut reader, mut writer) = stream.split();
+        exchange(&mut reader, &mut writer, "relay hello", 3).await;
+        // 大块数据覆盖 KCP 分片与两段重编码
+        let payload: Vec<u8> = (0..16_384).map(|index| (index * 7 % 256) as u8).collect();
+        writer.write_all(&payload).await.unwrap();
+        let mut received = vec![0u8; payload.len()];
+        reader.read_exact(&mut received).await.unwrap();
+        assert_eq!(received, payload);
+    })
+    .await;
+
+    stop(tasks);
+    result.expect("relay TCP 往返应在 20 秒内完成");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn relay_udp_roundtrip() {
+    let (client_port, tasks) = start_relay_pair(0).await;
+
+    let result = tokio::time::timeout(Duration::from_secs(20), async {
+        let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        socket.connect(("127.0.0.1", client_port)).await.unwrap();
+        let mut buffer = vec![0u8; 2048];
+        for index in 0..3u8 {
+            let message = format!("relay udp #{index}");
+            let mut received = None;
+            for _ in 0..20 {
+                socket.send(message.as_bytes()).await.unwrap();
+                match tokio::time::timeout(Duration::from_millis(300), socket.recv(&mut buffer))
+                    .await
+                {
+                    Ok(Ok(size)) => {
+                        received = Some(buffer[..size].to_vec());
+                        break;
+                    }
+                    _ => continue,
+                }
+            }
+            let received = received.expect("应在 6 秒内收到 UDP 回显");
+            assert_eq!(received, message.as_bytes());
+        }
+    })
+    .await;
+
+    stop(tasks);
+    result.expect("relay UDP 往返应在 20 秒内完成");
 }

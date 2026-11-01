@@ -498,7 +498,11 @@ name = "kcptube-relay"
 version = "0.1.0"
 dependencies = [
  "kcptube-config",
+ "kcptube-kcp",
+ "kcptube-logging",
+ "kcptube-protocol",
  "kcptube-transport",
+ "rand",
  "thiserror",
  "tokio",
  "tracing",
@@ -513,6 +517,7 @@ dependencies = [
  "kcptube-kcp",
  "kcptube-logging",
  "kcptube-protocol",
+ "kcptube-relay",
  "kcptube-transport",
  "rand",
  "thiserror",

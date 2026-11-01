@@ -145,23 +145,10 @@ async fn main() -> anyhow::Result<()> {
                 .run()
                 .await
                 .map_err(anyhow::Error::from),
-            RunningMode::Relay => {
-                let ingress = settings.ingress.as_deref().cloned();
-                let egress = settings.egress.as_deref().cloned();
-                match (ingress, egress) {
-                    (Some(ingress), Some(egress)) => Relay::new(ingress, egress)
-                        .run()
-                        .await
-                        .map_err(anyhow::Error::from),
-                    _ => {
-                        eprintln!(
-                            "配置文件 {} 缺少 [listener] 或 [forwarder]",
-                            settings.config_filename.display()
-                        );
-                        Ok(())
-                    }
-                }
-            }
+            RunningMode::Relay => Relay::new(settings.clone())
+                .run()
+                .await
+                .map_err(anyhow::Error::from),
             RunningMode::RelayIngress | RunningMode::RelayEgress => {
                 eprintln!(
                     "配置文件 {} 的 relay 分段不能单独运行",

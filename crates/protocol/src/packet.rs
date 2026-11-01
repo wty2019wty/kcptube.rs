@@ -375,6 +375,23 @@ impl SettingsWrapper {
             user_input_ip,
         })
     }
+
+    /// 原地改写已有握手负载的端口范围与带宽（对应 C++
+    /// `packet::modify_initialise_details_of_unpacked_data`）。
+    ///
+    /// 只覆盖 `port_start` / `port_end` / `outbound_bandwidth` / `inbound_bandwidth`
+    /// 四个字段，`uid`、`user_input_*` 与 IP 负载保持原样，因此**负载长度不变**。
+    /// relay 依赖这一点：它不能重新编码整个包，否则 KCP 消息长度会变。
+    pub fn modify_details(&self, data: &mut [u8]) -> Result<(), ProtocolError> {
+        if data.len() < Self::HEADER_SIZE {
+            return Err(ProtocolError::TooShort);
+        }
+        data[4..6].copy_from_slice(&self.port_start.to_be_bytes());
+        data[6..8].copy_from_slice(&self.port_end.to_be_bytes());
+        data[8..16].copy_from_slice(&self.outbound_bandwidth.to_be_bytes());
+        data[16..24].copy_from_slice(&self.inbound_bandwidth.to_be_bytes());
+        Ok(())
+    }
 }
 
 /// 对应 C++ `packet::pre_connect_custom_address`
@@ -740,6 +757,48 @@ mod tests {
         assert_eq!(settings.user_input_port, 443);
         assert_eq!(settings.outbound_bandwidth, 1);
         assert_eq!(settings.inbound_bandwidth, 2);
+    }
+
+    #[test]
+    fn settings_wrapper_modify_keeps_length_and_ip() {
+        let original = SettingsWrapper {
+            uid: 0x0102_0304,
+            port_start: 3000,
+            port_end: 3010,
+            outbound_bandwidth: 1024,
+            inbound_bandwidth: 2048,
+            user_input_port: 5099,
+            user_input_ip: "example.com".to_string(),
+        };
+        let mut encoded = original.encode();
+        let length = encoded.len();
+
+        // relay 只改写端口范围与带宽，uid / user_input_* / IP 保持不变
+        let modified = SettingsWrapper {
+            port_start: 4000,
+            port_end: 4010,
+            outbound_bandwidth: 10,
+            inbound_bandwidth: 20,
+            ..original.clone()
+        };
+        modified.modify_details(&mut encoded).expect("改写应成功");
+
+        assert_eq!(encoded.len(), length, "负载长度不能变化");
+        let decoded = SettingsWrapper::decode(&encoded).expect("应可解码");
+        assert_eq!(decoded.uid, original.uid);
+        assert_eq!(decoded.port_start, 4000);
+        assert_eq!(decoded.port_end, 4010);
+        assert_eq!(decoded.outbound_bandwidth, 10);
+        assert_eq!(decoded.inbound_bandwidth, 20);
+        assert_eq!(decoded.user_input_port, original.user_input_port);
+        assert_eq!(decoded.user_input_ip, original.user_input_ip);
+
+        // 太短的输入被拒绝
+        let mut short = [0u8; 10];
+        assert_eq!(
+            modified.modify_details(&mut short),
+            Err(ProtocolError::TooShort)
+        );
     }
 
     #[test]
