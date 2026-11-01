@@ -961,6 +961,136 @@ async fn start_relay_pair_with_hop(
     (client_port, tasks)
 }
 
+/// 启动「relay 多端口 + 客户端 `dport_refresh=1`」拓扑，用于验证客户端经 relay 跳跃。
+///
+/// relay 监听一段连续端口；握手响应会把服务端端口范围改写成 relay 自己的范围，
+/// 客户端据此在多个 relay 端口之间探测并切换。
+async fn start_relay_pair_with_client_hop(
+    relay_port_count: u16,
+    refresh: i16,
+) -> (u16, Vec<JoinHandle<()>>, std::path::PathBuf) {
+    let (echo_port, echo_tasks) = echo_server().await;
+    let server_port = allocate_ports(1);
+    let relay_start = allocate_ports(relay_port_count);
+    let relay_end = relay_start + relay_port_count - 1;
+    let client_port = allocate_ports(1);
+    let log_dir = std::env::temp_dir().join(format!(
+        "kcptube-relay-client-hop-{}-{}",
+        std::process::id(),
+        client_port
+    ));
+    let _ = std::fs::remove_dir_all(&log_dir);
+    std::fs::create_dir_all(&log_dir).expect("创建日志目录");
+
+    let server_settings = settings(&format!(
+        "mode=server\n\
+         listen_on=127.0.0.1\n\
+         listen_port={server_port}\n\
+         destination_address=127.0.0.1\n\
+         destination_port={echo_port}\n\
+         encryption_password=server-password\n\
+         encryption_algorithm=AES-OCB\n\
+         kcp=regular3\n"
+    ));
+    let mut relay_settings = settings(&format!(
+        "mode=relay\n\
+         [listener]\n\
+         listen_on=127.0.0.1\n\
+         listen_port={relay_start}-{relay_end}\n\
+         encryption_password=client-password\n\
+         encryption_algorithm=AES-GCM\n\
+         kcp=regular3\n\
+         [forwarder]\n\
+         destination_address=127.0.0.1\n\
+         destination_port={server_port}\n\
+         encryption_password=server-password\n\
+         encryption_algorithm=AES-OCB\n\
+         kcp=fast3\n"
+    ));
+    if let Some(egress) = relay_settings.egress.as_mut() {
+        // 关闭 relay 自己的 egress 跳跃，只观察客户端经 relay 的跳跃
+        egress.dynamic_port_refresh = 0;
+    }
+    let mut client_settings = settings(&format!(
+        "mode=client\n\
+         listen_on=127.0.0.1\n\
+         listen_port={client_port}\n\
+         destination_address=127.0.0.1\n\
+         destination_port={relay_start}\n\
+         encryption_password=client-password\n\
+         encryption_algorithm=AES-GCM\n\
+         kcp=regular3\n\
+         log_path={}\n",
+        log_dir.display()
+    ));
+    // 配置解析会把 dport_refresh 归一化到最小 20 秒，这里直接覆盖
+    client_settings.dynamic_port_refresh = refresh;
+
+    let server_task = tokio::spawn(async move {
+        let _ = Server::new(server_settings).run().await;
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let relay_task = tokio::spawn(async move {
+        let _ = Relay::new(relay_settings).run().await;
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let client_task = tokio::spawn(async move {
+        let _ = Client::new(client_settings).run().await;
+    });
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    let mut tasks = vec![server_task, relay_task, client_task];
+    tasks.extend(echo_tasks);
+    (client_port, tasks, log_dir)
+}
+
+/// 启动「目标地址无法按配置的 IP 版本解析」的 relay，用于验证 failure 回传。
+///
+/// `[forwarder]` 写 IPv6 字面量 `::1` 同时要求 `ipv4_only`，`resolve_endpoints_filtered`
+/// 会立即返回「地址与指定的 IP 版本不符」，不依赖 DNS，测试稳定。
+async fn start_relay_with_unreachable_target() -> (u16, Vec<JoinHandle<()>>) {
+    let relay_port = allocate_ports(1);
+    let client_port = allocate_ports(1);
+
+    let relay_settings = settings(&format!(
+        "mode=relay\n\
+         [listener]\n\
+         listen_on=127.0.0.1\n\
+         listen_port={relay_port}\n\
+         encryption_password=client-password\n\
+         encryption_algorithm=AES-GCM\n\
+         kcp=regular3\n\
+         [forwarder]\n\
+         destination_address=::1\n\
+         destination_port=9\n\
+         ipv4_only=yes\n\
+         encryption_password=server-password\n\
+         encryption_algorithm=AES-OCB\n\
+         kcp=fast3\n"
+    ));
+    let client_settings = settings(&format!(
+        "mode=client\n\
+         listen_on=127.0.0.1\n\
+         listen_port={client_port}\n\
+         destination_address=127.0.0.1\n\
+         destination_port={relay_port}\n\
+         encryption_password=client-password\n\
+         encryption_algorithm=AES-GCM\n\
+         kcp=regular3\n"
+    ));
+
+    let relay_task = tokio::spawn(async move {
+        let _ = Relay::new(relay_settings).run().await;
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let client_task = tokio::spawn(async move {
+        let _ = Client::new(client_settings).run().await;
+    });
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    (client_port, vec![relay_task, client_task])
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn relay_tcp_roundtrip() {
     let (client_port, tasks) = start_relay_pair(0).await;
@@ -1021,6 +1151,56 @@ async fn relay_port_hopping_keeps_connection() {
 
     stop(tasks);
     result.expect("relay 端口跳跃期间连接应保持可用");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn relay_client_port_hopping_keeps_connection() {
+    // relay 监听 4 个连续端口，客户端 `dport_refresh=1`：握手后客户端把目标端口池
+    // 换成 relay 的端口范围，并在它们之间跳跃；relay 每次收包更新 ingress 对端。
+    let (client_port, tasks, log_dir) = start_relay_pair_with_client_hop(4, 1).await;
+    let result = tokio::time::timeout(Duration::from_secs(30), async {
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", client_port))
+            .await
+            .unwrap();
+        let (mut reader, mut writer) = stream.split();
+        for index in 0..6u8 {
+            exchange(&mut reader, &mut writer, &format!("client hop #{index}"), 1).await;
+            tokio::time::sleep(Duration::from_millis(900)).await;
+        }
+    })
+    .await;
+
+    stop(tasks);
+    result.expect("客户端经 relay 端口跳跃期间连接应保持可用");
+
+    // 确认确实发生过跳跃，而不是一直停留在首个 relay 端口
+    let log = std::fs::read_to_string(log_dir.join("client_output.log")).expect("客户端日志");
+    assert!(
+        log.contains("端口跳跃：切换到"),
+        "日志中应记录端口跳跃：{log}"
+    );
+    let _ = std::fs::remove_dir_all(&log_dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn relay_unreachable_target_reports_failure() {
+    // relay 无法按配置的 IP 版本解析目标时，应向握手客户端回 failure，
+    // 让本地连接立即关闭，而不是等 30 秒握手超时。
+    let (client_port, tasks) = start_relay_with_unreachable_target().await;
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", client_port))
+            .await
+            .unwrap();
+        let mut buffer = [0u8; 1];
+        match stream.read(&mut buffer).await {
+            Ok(0) | Err(_) => {}
+            Ok(size) => panic!("收到 {size} 字节数据，但此时应只有 failure 并关闭连接"),
+        }
+    })
+    .await;
+
+    stop(tasks);
+    result.expect("relay 目标不可解析时应在握手阶段回 failure 并关闭本地连接");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
