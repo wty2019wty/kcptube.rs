@@ -17,7 +17,7 @@
 | `--check-config` 配置校验 | 🟢 可用 |
 | `--try` 连通性测试 | 🟡 尚未实现（运行时仅提示） |
 | 中继模式（`mode=relay`） | 🟡 配置可解析，运行时尚未实现 |
-| 自定义映射（`[custom_input*]`） | 🟡 配置可解析，转发尚未接入 |
+| 自定义映射（`[custom_input*]`） | 🟢 可用（含 `ignore_listen_*` / `ignore_destination_*` 与 mux 预连接） |
 | STUN / DDNS（`stun_server`、`update_ipv4`、`update_ipv6`、`destination_dnstxt`） | 🟡 尚未实现（参数可解析、可校验） |
 | FreeBSD 策略路由（`fib_ingress` / `fib_egress`） | 🟡 尚未实现（参数可解析） |
 
@@ -107,7 +107,7 @@ Rust 版只对外自报一个版本号，来源是根 `Cargo.toml` 里声明的 
 | [中继模式配置](relay-mode.md) | 中继节点配置（当前版本尚未实现运行期） |
 | [FEC 使用介绍](fec.md) | 前向纠错的格式、调优建议 |
 | [MTU 设置](mtu.md) | `mtu` / `kcp_mtu` 的换算与开销 |
-| [自定义映射](custom-ip-mappings.md) | `[custom_input*]` 映射规则（当前版本尚未接入转发） |
+| [自定义映射](custom-ip-mappings.md) | `[custom_input*]` 映射规则（TCP / UDP / mux 均已接入） |
 | [具体示例](specific-examples.md) | OpenVPN、HTTP、Shadowsocks、游戏等场景示例 |
 
 移植计划、进度与已知问题见开发者文档：[移植计划](migration-plan.md)、[移植进度](progress.md)。

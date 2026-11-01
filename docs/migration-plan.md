@@ -335,14 +335,14 @@ KCP 本体（ikcp）是标准大端格式。
 
 ---
 
-### M4 完整客户端/服务端（约 14~18 人日，接近完成）
+### M4 完整客户端/服务端（已完成）
 
 目标：把「能用」变成「和 C++ 版一样好用」。
 
 任务：
 
 - [x] **UDP 转发**（`udp_timeout`、按本地源地址的 UDP 映射表）
-- [x] **mux**：`mux_tunnels`、`mux_transfer` / `mux_cancel` / `pre_connect_custom_address`（发送侧待 `ignore_destination_*` 接入）
+- [x] **mux**：`mux_tunnels`、`mux_transfer` / `mux_cancel` / `pre_connect_custom_address`（发送侧已接入）
 - [x] **mux**：缓存队列与背压（有界 `mpsc` 替代 `mux_tcp_cache` / `mux_udp_cache` 的 `deque` + `pause()`）
 - [x] **端口跳跃**：`dport_refresh`、`test_connection`、socket 切换、旧 socket 延迟回收；服务端监听完整端口范围并共享会话表（已与 C++ 双向互通：Rust 客户端↔C++ 服务端 TCP/UDP、C++ 客户端↔Rust 服务端 UDP）
 - [x] **带宽限制**：`inbound_bandwidth` / `outbound_bandwidth` 接入 `Kcp::set_bandwidth` 与 `ResetWindowValues`
@@ -351,13 +351,13 @@ KCP 本体（ikcp）是标准大端格式。
 - [x] **目标选择**：客户端每次连接随机选择 `destination_address` / `destination_port`；只监听首个 `listen_port`（与 C++ 一致）
 - [x] **状态日志**：`log_path` 下的 status / messages 两个文件（ip 待 M6）
 - [x] **FEC**：发送端打包 + 冗余，接收端缓存与恢复
-- [ ] **自定义 IP 映射**：`->` 语法与 `[custom_input*]` 转发接入
+- [x] **自定义 IP 映射**：`->` 语法与 `[custom_input*]` 转发接入（含 `ignore_listen_*` / `ignore_destination_*` 与 mux `pre_connect_custom_address`）
 
 验收：
 
-- mux 下 100 并发 TCP 连接稳定
-- 端口跳跃切换期间连接不断
-- 带宽、`blast`、`ipv4_only` / `ipv6_only` 行为与 C++ 一致
+- [x] mux 下 100 并发 TCP 连接稳定（`interop.rs::mux_hundred_concurrent_tcp`）
+- [x] 端口跳跃切换期间连接不断（`interop.rs::port_hopping_keeps_connection`）
+- [x] 带宽、`blast`、`ipv4_only` / `ipv6_only` 行为与 C++ 一致
 
 ---
 

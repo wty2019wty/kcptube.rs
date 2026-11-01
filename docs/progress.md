@@ -11,17 +11,17 @@
 | 指标 | 数值 |
 |---|---|
 | C++ 参考实现 | 14,308 行（`legacy-cpp/`，含 ikcp 1,109 行） |
-| Rust 代码 | 约 10,180 行（22 个 `.rs` 文件，非空行） |
+| Rust 代码 | 约 10,715 行（22 个 `.rs` 文件，非空行） |
 | crate 数 | 11（10 个 lib + 1 个 bin） |
-| 单元/集成测试 | 97 个，全部通过 |
-| 整体完成度 | **M0~M3 完成，M4 约 85%** |
+| 单元/集成测试 | 106 个，全部通过 |
+| 整体完成度 | **M0~M4 完成** |
 
 ```
 M0 基线            ██████████ 100%
 M1 协议基础层      ██████████ 100%
 M2 KCP/传输        ██████████ 100%
 M3 TCP 最小互通     ██████████ 100%
-M4 完整模式         ████████░░  85%   ← 当前（UDP + FEC + mux + 端口跳跃已完成）
+M4 完整模式         ██████████ 100%   ← 已完成（UDP + FEC + mux + 端口跳跃 + 自定义映射）
 M5 relay/跨平台     ░░░░░░░░░░   0%
 M6 STUN/DDNS       ░░░░░░░░░░   0%
 ```
@@ -38,8 +38,8 @@ M6 STUN/DDNS       ░░░░░░░░░░   0%
 | `crates/kcp` | `3rd_party/ikcp.cpp`、`networks/kcp.cpp` | 🟢 100% | ikcp 全量移植；发送/重传/拥塞/窗口探测与 C++ 输出逐字节对撞通过 |
 | `crates/config` | `configurations.cpp`（1010 行） | 🟢 100% | 两遍解析、预设展开、MTU、relay 分段、自定义映射、日志路径、错误文本全部对齐 |
 | `crates/transport` | `connections.cpp`、`kcp_updater.cpp`、`mux_tunnel.cpp` | 🟢 100% | KCP 调度、加密包层、UDP/TCP 封装、`KcpChannel`、FEC 收发流水线、mux 隧道、可切换发送 socket |
-| `crates/client` | `client.cpp`（1917 行） | 🟢 95% | TCP + UDP 监听、握手（超时换端口、多地址逐个尝试、ICMP 错误不中断）、`raw_data`/mux 转发、端口跳跃、随机目标选择、保活、状态日志；`[custom_input*]` 映射未接入 |
-| `crates/server` | `server.cpp`（1323 行） | 🟢 95% | 端口范围监听、TCP/UDP/mux 转发、端口跳跃重定向、会话回收、保活、状态日志；STUN/DDNS 移至 M6 |
+| `crates/client` | `client.cpp`（1917 行） | 🟢 100% | TCP + UDP 监听、握手（超时换端口、多地址逐个尝试、ICMP 错误不中断）、`raw_data`/mux 转发、端口跳跃、随机目标选择、保活、状态日志；`[custom_input*]` 映射与 `pre_connect_custom_address` 已接入 |
+| `crates/server` | `server.cpp`（1323 行） | 🟢 100% | 端口范围监听、TCP/UDP/mux 转发、端口跳跃重定向、会话回收、保活、状态日志、`ignore_destination_*` 目标；STUN/DDNS 移至 M6 |
 | `crates/logging` | `share_defines.cpp` 日志函数 | 🟢 100% | messages（追加）/ status（覆盖）两类文件已接入，ip 文件接口预留（随 M6）、`to_speed_unit` 与 C++ 逐档一致 |
 | `crates/relay` | `relay.cpp`（1802 行） | 🟡 5% | 仅入口；配置已能拆出 ingress/egress |
 | `crates/kcptube` | `main.cpp` | 🟢 90% | clap 参数、usage、`--check-config` 可用；`--try` 仍为骨架 |
@@ -173,7 +173,7 @@ Rust 输出完全一致，见 `crates/fec/src/lib.rs::vectors_match_botan_zfec`�
   - **C++ 客户端** → Rust 服务端：3 次 UDP echo 往返通过
   - Rust 客户端 → **C++ 服务端**：3 次 UDP echo 往返通过
   - Rust 客户端 → Rust 服务端：自动化测试 `interop.rs::udp_roundtrip`
-- [ ] `ignore_destination_*` 下由客户端指定目标地址（`request_initialise_packet_with_address` 尚未接入）
+- [x] `ignore_destination_*` 下由客户端指定目标地址（`request_initialise_packet_with_address` 已接入，见 3.11）
 - [x] mux 模式下的 UDP（`mux_transfer`，见 3.9）
 
 ### 3.8 FEC 接入收发流水线（M4，已完成）
@@ -188,7 +188,7 @@ Rust 输出完全一致，见 `crates/fec/src/lib.rs::vectors_match_botan_zfec`�
   - Rust 客户端 → **C++ 服务端**：内容完全一致
   - **C++ 客户端** → Rust 服务端：内容完全一致
   - Rust ↔ Rust：`interop.rs::fec_tcp_roundtrip`
-- [ ] 人为丢包下的 FEC 恢复统计（需要引入丢包代理）
+- [x] 人为丢包下的 FEC 恢复（`interop.rs::fec_recovers_under_packet_loss`，进程内丢包代理每 10 个报文丢 1 个，32 KiB 数据完整）
 
 ### 3.9 mux 多路复用（M4，已完成）
 
@@ -238,6 +238,20 @@ Rust 输出完全一致，见 `crates/fec/src/lib.rs::vectors_match_botan_zfec`�
 > 实际是两次尝试的最小间隔；Rust 目前对所有数据通道按 `dport_refresh`
 > 周期主动跳跃。两者互通无碍，但跳跃时机与协议范围不同，见已知问题。
 
+### 3.11 自定义输入映射（M4，已完成）
+
+- [x] **客户端**：`ignore_listen_address` / `ignore_listen_port` 为真时不再监听 `listen_on` + `listen_port`，改为逐条监听 `[custom_input]`（TCP + UDP）、`[custom_input_tcp]`（仅 TCP）、`[custom_input_udp]`（仅 UDP）映射
+- [x] **客户端**：映射本地地址为空时按 `ip_version_only` 选择通配地址；`ipv4_only` 下跳过 IPv6 映射项并写日志（与 C++ `multiple_listening_tcp` / `multiple_listening_udp` 一致）
+- [x] **客户端**：握手包改用 `request_initialise_packet_with_address`，把映射右侧目标地址随 `settings_wrapper` 交给服务端
+- [x] **客户端**：mux 模式建记录后立即发送 `mux_tell_server_connect_address`（`pre_connect_custom_address`），让服务端在数据到达前预连接
+- [x] **服务端**：`ignore_destination_address` / `ignore_destination_port` 任一为真时，TCP/UDP 目标取自握手包里的 `user_input_ip` / `user_input_port`（`target_for`）
+- [x] **服务端**：mux 握手不再要求 `destination_*`（对齐 C++ `protocol_type::mux` 直接 `connect_success = true`）；忽略默认目标时，没有 `pre_connect_custom_address` 的 `mux_transfer` 直接回 `mux_cancel`
+- [x] 互通验证：
+  - `interop.rs::custom_input_tcp_roundtrip` / `custom_input_udp_roundtrip`
+  - `interop.rs::custom_input_mux_roundtrip`（`mux_tunnels=1`，TCP + UDP）
+  - `interop.rs::custom_input_ignore_destination_address`（服务端用 `destination_address={}`）
+- [x] M4 验收：`interop.rs::mux_hundred_concurrent_tcp`（4 条隧道、100 并发 TCP 全部完成）
+
 ---
 
 ## 4. 测试统计
@@ -252,16 +266,16 @@ Rust 输出完全一致，见 `crates/fec/src/lib.rs::vectors_match_botan_zfec`�
 | `transport` | 24 | 调度器、加密包层、UDP/TCP 封装、双通道 UDP 端到端、FEC 编解码/恢复/清理、mux 记录表、socket 重绑、blast、带宽、地址族解析 |
 | `logging` | 4 | `to_speed_unit` 分档、空路径、追加/覆盖写 |
 | `server` | 2 | 端口连续性、超时常量与 C++ 对齐 |
-| `server`（集成） | 7 | `interop.rs`：TCP 往返、UDP 往返、FEC 往返、mux 往返、mux 启动重试、端口跳跃、保活/重连 |
-| `client` | 1 | 握手超时常量与 C++ 对齐 |
-| **合计** | **97** | 全部通过 |
+| `server`（集成） | 13 | `interop.rs`：TCP 往返、UDP 往返、FEC 往返、FEC 人为丢包、mux 往返、mux 启动重试、端口跳跃、保活/重连、100 并发、自定义映射（TCP/UDP/mux/`ignore_destination_address`） |
+| `client` | 4 | 握手超时常量、监听项生成（常规 / `[custom_input*]` 分段 / `ipv4_only` 过滤） |
+| **合计** | **106** | 全部通过 |
 
 命令与结果：
 
 ```
 cargo fmt --all -- --check        → 0
 cargo clippy --workspace --all-targets -- -D warnings → 0
-cargo test --workspace            → 97 passed, 0 failed
+cargo test --workspace            → 106 passed, 0 failed
 cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 ```
 
@@ -282,7 +296,7 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 | 4 | 协议无版本字段，锁定 `20260329` | 上游升级需同步 | 每次上游发版做 diff 并记录 |
 | 5 | `SO_SETFIB`（FreeBSD）未实现 | FreeBSD 多路由表不可用 | M5 |
 | 6 | `dashmap` 在 workspace 依赖中声明但未被任何 crate 使用 | 依赖膨胀 | 移除或接入 |
-| 7 | `ignore_destination_*` / `[custom_input*]` 映射转发未接入；mux `pre_connect_custom_address` 发送侧待补 | `ignore_*` 与自定义映射场景不可用 | M4 剩余 |
+| 7 | ~~`ignore_destination_*` / `[custom_input*]` 映射转发未接入；mux `pre_connect_custom_address` 发送侧待补~~ | 已修复：客户端按映射监听并随握手包下发目标，mux 模式发送 `pre_connect_custom_address`；服务端 `ignore_destination_*` 生效 | 已关闭 |
 | 8 | STUN / DDNS 未实现（已从 M4 移入 M6） | 公网地址探测与动态 DNS 不可用 | M6 |
 | 9 | 端口跳跃时机不同：Rust 对所有数据通道按 `dport_refresh` 周期主动跳跃；C++ 跳过 TCP，且仅在链路空闲超时后探测 | 与 C++ 的跳跃频率/触发条件不一致，可能影响 QoS 观察 | 评估是否对齐 C++ 或保留现状并文档说明 |
 | 12 | ~~未指定 `ipv4_only` / `ipv6_only` 时 Rust 只监听 IPv4 通配 `0.0.0.0`~~ | 已修复：改为与 C++ 一致的 IPv6 通配 `[::]` + 双栈（`ipv6_only` 才置 `IPV6_V6ONLY`） | 已关闭 |
@@ -296,15 +310,15 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 2. [x] 握手重试、超时清理、dead link 清理与 C++ 对照
 3. [x] 状态日志（status / messages）格式对齐（`ip_address.log` 待 M6）
 4. [x] **UDP 转发**（`udp_timeout`、UDP 映射表）
-5. [x] **mux**：`mux_tunnels`、`mux_transfer` / `mux_cancel` / `pre_connect_custom_address`（发送侧待 `ignore_destination_*` 接入）
+5. [x] **mux**：`mux_tunnels`、`mux_transfer` / `mux_cancel` / `pre_connect_custom_address`（含发送侧）
 6. [x] **端口跳跃**：`dport_refresh`、`test_connection`、socket 切换、服务端端口范围
 7. [x] FEC 接入发送/接收流水线
 8. [x] 带宽限制、`blast`、`ipv4_only` / `ipv6_only`
-9. [ ] `ignore_destination_*` 与 `[custom_input*]` 映射（M4 收尾）
+9. [x] `ignore_destination_*` 与 `[custom_input*]` 映射（M4 收尾）
 10. [ ] M5：relay、`--try`、平台适配、性能与发布
 11. [ ] M6：STUN、DDNS、`ip_address.log`
 
-完成标准：M4 验收表中的 UDP、mux、端口跳跃全部可用；STUN/DDNS 转入 M6。
+完成标准：M4 验收表中的 UDP、mux、端口跳跃、自定义映射全部可用；STUN/DDNS 转入 M6。
 
 ---
 
@@ -336,6 +350,7 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 | 2026-11-01 | fix: 域名解析保留**全部**候选地址（`resolve_endpoints_filtered`），握手与端口跳跃逐个尝试；此前只取 `lookup_host` 的第一个结果，DDNS/`localhost` 解析到 IPv6 而服务端只监听 IPv4 时会一直超时 |
 | 2026-11-01 | fix: 未指定 `ipv4_only` / `ipv6_only` 时监听地址改为 `[::]` 双栈（与 C++ `udp_server::initialise` 一致，仅 `ipv6_only` 才置 `IPV6_V6ONLY`），修复默认无法被 IPv6 / `localhost(::1)` 访问的问题；已知问题 #12 关闭 |
 | 2026-11-01 | chore: 发布产物体积优化 —— release 打开 `strip`/fat LTO、`opt-level = "s"`（加密/KCP/转发/校验和热点仍为 `-O3`）、`tokio` 由 `full` 收窄到实际特性、`clap` 去掉彩色与拼写建议、`tracing-subscriber` 用 `Targets` 取代 `env-filter`（省掉 regex）；Windows GNU 产物体积 2.78 MB → 1.26 MB（约 -55%），musl 静态产物 2.41 MB → 1.44 MB（约 -40%） |
+| 2026-11-01 | **M4 完成（自定义映射）**：客户端在 `ignore_listen_*` 下按 `[custom_input*]` 逐条监听并随 `request_initialise_packet_with_address` 下发目标；mux 模式发 `pre_connect_custom_address`；服务端 `ignore_destination_*` 生效，mux 握手不再要求 `destination_*`。新增 4 个自定义映射 interop 测试、100 并发 mux TCP 验收测试、进程内丢包代理下的 FEC 端到端测试，以及 3 个客户端监听项单元测试；测试增至 106，已知问题 #7 关闭 |
 
 ---
 

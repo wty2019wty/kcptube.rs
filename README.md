@@ -15,7 +15,7 @@
 | 配置解析（`crates/config`） | 🟢 完整解析与校验，`--check-config` 可用 |
 | 传输层（`crates/transport`） | 🟢 KCP 调度、加密包层、UDP/TCP 封装、`KcpChannel`、FEC 收发流水线、mux 隧道 |
 | 日志（`crates/logging`） | 🟢 messages / status 两类文件已接入；`ip_address.log` 待 STUN/DDNS（M6） |
-| client / server / relay | 🟢 client/server 支持 TCP + UDP、单通道与 mux 多路复用、端口跳跃（含 FEC、保活、会话回收、握手重试）；relay 仍为入口 |
+| client / server / relay | 🟢 client/server 支持 TCP + UDP、单通道与 mux 多路复用、端口跳跃、自定义映射（`[custom_input*]`）与 FEC、保活、会话回收、握手重试；relay 仍为入口 |
 | 连通性测试（`--try`） | 🟡 未实现 |
 | STUN / DDNS | 🟡 计划 M6 |
 
@@ -28,7 +28,7 @@
 - [常规配置](docs/client-server.md)：客户端 / 服务端配置示例、端口跳跃、多地址
 - [中继模式配置](docs/relay-mode.md)（运行期尚未实现）
 - [FEC 使用介绍](docs/fec.md)、[MTU 设置](docs/mtu.md)
-- [自定义映射](docs/custom-ip-mappings.md)（转发尚未接入）、[具体示例](docs/specific-examples.md)
+- [自定义映射](docs/custom-ip-mappings.md)、[具体示例](docs/specific-examples.md)
 
 开发者文档：
 

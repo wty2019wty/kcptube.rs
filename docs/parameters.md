@@ -37,7 +37,7 @@
 | blast | yes<br>true<br>1<br>no<br>false<br>0 |否|**yes**|尝试忽略 KCP 流控设置，尽可能迅速地转发数据包。可能会导致负载过大|
 | \[listener\] | N/A |是<br>(仅限中继模式)|N/A|中继模式的标签，用于指定监听模式的 KCP 设置<br>该标签表示与客户端交互数据|
 | \[forwarder\] | N/A  |是<br>(仅限中继模式)|N/A|中继模式的标签，用于指定转运模式的 KCP 设置<br>该标签表示与服务端交互数据|
-| \[custom_input\] | N/A  |否|N/A|自定义映射模式的标签，使用方法请参考 [自定义映射使用方法](custom-ip-mappings.md)。**当前版本转发尚未接入**|
+| \[custom_input\] | N/A  |否|N/A|自定义映射模式的标签，使用方法请参考 [自定义映射使用方法](custom-ip-mappings.md)（TCP / UDP / mux 均已接入）|
 | \[custom_input_tcp\] | N/A  |否|N/A|自定义映射模式的标签，同上|
 | \[custom_input_udp\] | N/A  |否|N/A|自定义映射模式的标签，同上|
 
