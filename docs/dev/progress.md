@@ -14,7 +14,7 @@
 | Rust 代码 | 14,218 行（56 个源文件，非空行，含 `#[cfg(test)]` 模块） |
 | crate 数 | 12（11 个 lib + 1 个 bin） |
 | 单元/集成测试 | 150 个，全部通过 |
-| 整体完成度 | **M0~M5 完成，M6 未开始**（FreeBSD `SO_SETFIB` 顺延至 M10） |
+| 整体完成度 | **M0~M5 完成，M6 未开始**（仅配置解析/校验与 `log_ip_address` 路径已预留；FreeBSD `SO_SETFIB` 顺延至 M10） |
 
 ```
 M0 基线            ██████████ 100%
@@ -23,7 +23,7 @@ M2 KCP/传输        ██████████ 100%
 M3 TCP 最小互通     ██████████ 100%
 M4 完整模式         ██████████ 100%
 M5 relay/跨平台     ██████████ 100%   ← relay、--try、性能、发布完成
-M6 STUN/DDNS       ░░░░░░░░░░   0%
+M6 STUN/DDNS       ░░░░░░░░░░   0%（仅配置层预留）
 M10 远期平台        ░░░░░░░░░░  --    ← FreeBSD SO_SETFIB、macOS（未排期）
 ```
 
@@ -332,7 +332,7 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 | 3.3 | mux 背压用有界队列替代 C++ 的 `pause()` | 行为等价（读变慢即背压） | 保持现状 |
 | 4 | 协议无版本字段，锁定 `20260329` | 上游升级需同步 | 每次上游发版做 diff 并记录 |
 | 5 | `SO_SETFIB`（FreeBSD）未实现 | FreeBSD 多路由表不可用 | M10（远期） |
-| 6 | `dashmap` 在 workspace 依赖中声明但未被任何 crate 使用 | 依赖膨胀 | 移除或接入 |
+| 6 | ~~`dashmap` 在 workspace 依赖中声明但未被任何 crate 使用~~ | 2026-11-01 代码复核：根 `Cargo.toml` 已无 `dashmap`，连接表统一使用 `Mutex<HashMap>` | 已关闭 |
 | 7 | ~~`ignore_destination_*` / `[custom_input*]` 映射转发未接入；mux `pre_connect_custom_address` 发送侧待补~~ | 已修复：客户端按映射监听并随握手包下发目标，mux 模式发送 `pre_connect_custom_address`；服务端 `ignore_destination_*` 生效 | 已关闭 |
 | 8 | STUN / DDNS 未实现（已从 M4 移入 M6） | 公网地址探测与动态 DNS 不可用 | M6 |
 | 9 | 端口跳跃时机不同：Rust 对所有数据通道按 `dport_refresh` 周期主动跳跃；C++ 跳过 TCP，且仅在链路空闲超时后探测 | 与 C++ 的跳跃频率/触发条件不一致，可能影响 QoS 观察 | 评估是否对齐 C++ 或保留现状并文档说明 |
@@ -419,6 +419,7 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 | 2026-11-01 | **M5 发布工程化**：新增 `scripts/build-release.ps1`（Windows 静态 CRT zip + Linux musl tar.gz + `SHA256SUMS.txt`；Windows 本地用 zigbuild，Linux 主机/CI 用原生 musl target）、`.github/workflows/release.yml`（`v*` tag 触发；ubuntu 用 `musl-tools` 原生构建、windows 用 msvc；创建 GitHub Release）、[`release.md`](release.md)；本地验证两平台产物构建成功、Windows 产物可运行、包内容与校验和正确 |
 | 2026-11-01 | docs: M5 标记完成；FreeBSD `SO_SETFIB` 从 M5 顺延到新增的 M10「远期平台项」（未排期），`migration-plan.md`、`progress.md` 的总览、已知问题 #5、下一步与相关注释同步；`relay-plan.md`、`docs/parameters.md`、`docs/README.md` 的平台说明改为指向 M10 |
 | 2026-11-01 | **ci: 发布矩阵扩到 6 个目标并去掉对脚本的依赖**：`release.yml` 的构建/打包逻辑全部内联（版本号读取、暂存目录、zip/tar.gz），Linux 用 `cross` 构建 `i686`/`x86_64`/`armv7`（musleabihf）/`aarch64` 四个 musl 静态目标，Windows 用 msvc 构建 `i686`/`x86_64`（`crt-static`）；`rust.yml` 保留 ubuntu/windows 原生 fmt/clippy/test，新增 `cross-check` job 对上述非本地架构做 `cross check` / `cargo check`；`scripts/build-release.ps1` 保留但仅用于本地手动打包（仍只覆盖 Windows x64 与 Linux x64），同步更新 `release.md`、根 `README.md`、`AGENTS.md` |
+| 2026-11-01 | docs: 按代码与测试复核修正文档漂移——`migration-plan.md` §1.4 勾选已由 M1–M5 完成的 6 项成功标准、§4.3 连接表改为实际使用的 `Mutex<HashMap>`、M0 的 crate 数改为 12、§9.2 更新 tag 现状（已有 `v0.1.0.rs`，无 `m1`–`m5`），M6 补注“配置层已预留、运行层为 0”；`progress.md` 总览与进度条补注 M6 仅配置层预留，已知问题 #6（`dashmap`）关闭。复核结果：`cargo test --workspace` 150/150、`cargo fmt --all -- --check` 通过、6 份样例配置 `--check-config` 输出 `No` |
 
 ---
 

@@ -34,12 +34,14 @@
       （实测约 1.2 倍，见 [`benchmark.md`](benchmark.md)）
 - [x] Rust 服务端 ↔ C++ 客户端：同上
       （实测约 2.0 倍，见 [`benchmark.md`](benchmark.md)）
-- [ ] `mode=client / server / relay` 三种模式均可运行
-- [ ] 6 种加密模式（4 种 AEAD + `xor`、`none`）全部与 C++ 互通
-- [ ] FEC 开启/关闭均可互通
-- [ ] mux_tunnels > 1 时多路复用正常
-- [ ] 端口跳跃（`dport_refresh`）可用
-- [ ] 配置错误提示与 C++ 版行为一致（`--check-config`）
+- [x] `mode=client / server / relay` 三种模式均可运行（M3–M5）
+- [x] 6 种加密模式（4 种 AEAD + `xor`、`none`）全部与 C++ 互通（M1，Botan 向量对撞）
+- [x] FEC 开启/关闭均可互通（M1/M4，`interop.rs::fec_*`）
+- [x] mux_tunnels > 1 时多路复用正常（M4，`mux_hundred_concurrent_tcp`）
+- [x] 端口跳跃（`dport_refresh`）可用（M4/M5，`port_hopping_keeps_connection`）
+- [x] 配置错误提示与 C++ 版行为一致（`--check-config`）（M1，样例配置全部为 `No`）
+
+> 以上勾选状态已于 2026-11-01 按代码与测试复核（`cargo test --workspace` 150/150）。
 
 ---
 
@@ -146,7 +148,7 @@ crates/
 
 - 每个 TCP 会话一个 task；UDP 监听器一个 task，收到数据后按对端分发。
 - KCP 会话由 `Mutex<Kcp>` 保护，只在调度 task 内驱动（避免锁竞争）。
-- 连接表使用 `dashmap` 或 `Mutex<HashMap>`，键与 C++ 版一致：
+- 连接表使用 `Mutex<HashMap>`（当前实现，未引入 `dashmap`），键与 C++ 版一致：
   - `(conv << 32) + connection_id`
   - UDP 对端 `SocketAddr` → mux 记录
 - 所有超时清理逻辑照搬 C++ 的常量（`gbv_*`，见 `crates/protocol/src/constant.rs`）。
@@ -256,7 +258,7 @@ KCP 本体（ikcp）是标准大端格式。
 - [x] 环境确认（Rust 1.96 / GCC 16.2 / asio / Botan3）
 - [x] C++ 参考版编译成功并可运行
 - [x] 迁移 C++ 代码至 `legacy-cpp/`
-- [x] 建立 Rust workspace（11 crate）
+- [x] 建立 Rust workspace（12 crate：11 lib + 1 bin）
 - [x] 加密层与 Botan 向量对撞（当前 4 种 AEAD 全部一致）
 - [x] CI（fmt / clippy / test，ubuntu + windows）
 
@@ -387,6 +389,8 @@ KCP 本体（ikcp）是标准大端格式。
 
 目标：完成服务端公网地址探测与动态 DNS 回调，依赖公网环境验收。
 
+现状（2026-11-01 代码复核）：`stun_server` / `update_ipv4` / `update_ipv6` / `destination_dnstxt` 等参数已能解析与校验，`log_ip_address` 路径也会计算，但 client/server/relay 运行期尚未使用这些字段；即**配置层已预留，运行层为 0**。
+
 任务：
 
 - [ ] **STUN**：服务端打洞，IPv4 / IPv6（`stun_server`）
@@ -485,7 +489,7 @@ cmake -S legacy-cpp -B build/legacy -G Ninja && cmake --build build/legacy
 
 - 分支：`rs-dev` 开发，`main` 保持与上游可对比状态。
 - 提交信息：`<类型>: <中文描述>`，类型用 `feat / fix / refactor / test / docs / chore`。
-- 每个里程碑结束打 tag（如 `m1-protocol`、`m2-kcp`）。当前仓库尚未创建里程碑 tag，仅有上游 `v0.x`。
+- 每个里程碑结束打 tag（如 `m1-protocol`、`m2-kcp`）。当前已有 Rust 版 tag `v0.1.0.rs`；`m1`–`m5` 里程碑 tag 尚未创建，其余 `v0.x` 为上游历史 tag。
 
 ### 9.3 质量门禁
 
