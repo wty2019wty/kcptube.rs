@@ -35,7 +35,7 @@
 - [开发文档首页](docs/dev/README.md)
 - [移植计划](docs/dev/migration-plan.md)：目标、架构、阶段划分、协议关键事实、风险登记
 - [移植进度](docs/dev/progress.md)：当前状态、测试统计、已知问题、下一步
-- [优化与去重路线](docs/dev/refactor-backlog.md)、[relay 实施方案](docs/dev/relay-plan.md)
+- [优化与去重路线](docs/dev/refactor-backlog.md)、[relay 实施方案](docs/dev/relay-plan.md)、[性能基准](docs/dev/benchmark.md)
 
 上游 C++ 版使用文档（仅供参考，行为以本仓库文档为准）：[`legacy-cpp/docs/`](legacy-cpp/docs)
 

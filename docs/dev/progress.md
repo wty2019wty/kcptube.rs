@@ -11,7 +11,7 @@
 | 指标 | 数值 |
 |---|---|
 | C++ 参考实现 | 14,308 行（`legacy-cpp/`，含 ikcp 1,109 行） |
-| Rust 代码 | 14,114 行（55 个源文件，非空行，含 `#[cfg(test)]` 模块） |
+| Rust 代码 | 14,218 行（56 个源文件，非空行，含 `#[cfg(test)]` 模块） |
 | crate 数 | 12（11 个 lib + 1 个 bin） |
 | 单元/集成测试 | 150 个，全部通过 |
 | 整体完成度 | **M0~M4 完成，M5 进行中** |
@@ -22,7 +22,7 @@ M1 协议基础层      ██████████ 100%
 M2 KCP/传输        ██████████ 100%
 M3 TCP 最小互通     ██████████ 100%
 M4 完整模式         ██████████ 100%
-M5 relay/跨平台     █████████▌  95%   ← relay R1–R4、--try、T4/T10 验收完成
+M5 relay/跨平台     █████████▊  97%   ← relay、--try、T4/T10、性能基准完成；剩 SO_SETFIB 与发布
 M6 STUN/DDNS       ░░░░░░░░░░   0%
 ```
 
@@ -252,6 +252,18 @@ Rust 输出完全一致，见 `crates/fec/src/lib.rs::vectors_match_botan_zfec`�
   - `interop.rs::custom_input_ignore_destination_address`（服务端用 `destination_address={}`）
 - [x] M4 验收：`interop.rs::mux_hundred_concurrent_tcp`（4 条隧道、100 并发 TCP 全部完成）
 
+### 3.12 性能基准（M5，已完成）
+
+- [x] 新增 `scripts/bench.py`：单条 TCP 连接的 echo 吞吐（32/64 MiB × 3 轮取中位数）与
+      64 字节 ping-pong 延迟（300 次，P50 / P99）
+- [x] 新增 `scripts/bench-m5.ps1`：四个场景的编排（`rust-rust` / `cpp-cpp` /
+      `rust-client-cpp-server` / `cpp-client-rust-server`），自动分配端口、等待就绪、
+      汇总 `report.md`
+- [x] 结果见 [`benchmark.md`](benchmark.md)：`rust-rust` 21–31 MiB/s，`cpp-cpp` 6.3–6.5；
+      两个互操作方向 7.7–7.8 / 13.0–13.3；P99 0.13–0.24 ms，与 C++ 相当；
+      两进程工作集 11.5 MB vs 23.1 MB
+- [x] M5 性能验收（≥ C++ 80%、延迟不劣化）通过；`refactor-backlog.md` 阶段 4 暂不排期
+
 ---
 
 ## 4. 测试统计
@@ -329,8 +341,9 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 16. [x] M5 之 `--try`（tester）：新建 `kcptube-tester`（2026-11-01 完成）
 16.1 [x] relay 代码验证后的收尾：保活初始化、`disconnect` 31 秒延迟回收、目标失败回 `failure`、客户端经 relay 跳跃与 `initialise` 改写单测；T4（空闲 300 秒）与 T10（C++ 四场景）验收通过（2026-11-01 完成）
 17. [x] 多配置文件并发启动（已知问题 #13，2026-11-01 完成）
-18. [ ] M5 之 FreeBSD `SO_SETFIB`、性能基准与发布
-19. [ ] M6：STUN、DDNS、`ip_address.log`
+18. [x] M5 之性能基准：新增 `scripts/bench.py` + `scripts/bench-m5.ps1`，结果见 [`benchmark.md`](benchmark.md)（2026-11-01 完成；Rust↔Rust 吞吐约 3.3–4.9× C++ 基线，互操作方向约 1.2× / 2.0×，延迟不劣化）
+19. [ ] M5 之 FreeBSD `SO_SETFIB` 与发布（静态链接脚本/CI 产物、GitHub Release、Docker）
+20. [ ] M6：STUN、DDNS、`ip_address.log`
 
 完成标准：M4 验收表中的 UDP、mux、端口跳跃、自定义映射全部可用；STUN/DDNS 转入 M6。
 
@@ -380,6 +393,7 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 | 2026-11-01 | **T4 / T10 验收完成**：`scripts/verify-t10-relay-interop.ps1` 用桌面 C++ `20260329` 原版跑通 `core`（C++ client → Rust relay → C++ server）、`fec`、`mux` 与 `reverse`（Rust client → C++ relay → Rust server）；`scripts/verify-t4-relay-keepalive.ps1` 在客户端 `keep_alive=0`、relay `keep_alive=1` 下空闲 **300 秒**后 TCP/UDP 仍通，已知问题 #1、#14 关闭。新增 `scripts/build-legacy-mingw.ps1`、`net_echo.py`、`net_probe.py` 与两份验收脚本。同步登记 C++ relay 的两个限制（`[listener]` 段 `listen_on` 崩溃、`relay.cpp:1369` egress 误用 ingress 加密参数） |
 | 2026-11-01 | docs: 按代码现状校准文档瑕疵——`docs/README.md` 的模式列表与状态表统一为「中继模式可用」；`relay-mode.md` 状态行更新为已完成 C++ T10 四个场景的互通验收；`migration-plan.md` crate 数改为 12（11 lib + 1 bin）、勾选 M5 的 relay/tester 与 Linux 构建、把「静态链接」拆为未完成项、补充端到端矩阵的口径说明；`refactor-backlog.md` 阶段 5 的空闲清理按 R2 的实际落地更新；`relay-plan.md` 统一 `relay.cpp` 行数口径并修正 relay 保活的实际实现（自管 `next_keep_alive`，未复用 `transport::KeepAlive`）；根 `README.md` 目录结构补 `tester/`；`progress.md` 代码量更新为 55 个源文件 / 14,114 行（测试仍为 149，`cargo test --workspace` 实跑复核） |
 | 2026-11-01 | **fix（已知问题 #13）**：`main` 改为用 `tokio::task::JoinSet` **并发**运行全部配置文件，对齐 C++ 在同一 `io_context` 上同时启动 client/server/relay；此前逐个 `await` 会让首个常驻配置独占进程、后续配置永不启动。新增 `crates/kcptube/tests/multi_profile.rs`（启动真实二进制、两个 `mode=server` 配置、断言两个 UDP 端口都监听），`docs/README.md` 与 `docs/client-server.md` 的多配置说明同步改为并发；测试增至 150，`fmt` / `clippy -D warnings` / `test --workspace` 全绿 |
+| 2026-11-01 | **M5 性能基准**：新增 `scripts/bench.py`（吞吐 / 延迟测量客户端）与 `scripts/bench-m5.ps1`（四场景编排：`rust-rust` / `cpp-cpp` / `rust-client-cpp-server` / `cpp-client-rust-server`），新增 [`benchmark.md`](benchmark.md)。本机（Ryzen 9 7845HX / Windows 10 / Release）结果：`rust-rust` 21–31 MiB/s、`cpp-cpp` 6.3–6.5、`rust-client-cpp-server` 7.7–7.8、`cpp-client-rust-server` 13.0–13.3；P99 0.13–0.24 ms，与 C++ 相当；两进程工作集 Rust 11.5 MB vs C++ 23.1 MB。M5 性能验收（≥ C++ 80%、延迟不劣化）通过，阶段 4 的优化项暂不排期 |
 
 ---
 

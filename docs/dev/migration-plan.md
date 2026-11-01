@@ -30,8 +30,10 @@
 
 ### 1.4 成功标准
 
-- [ ] Rust 客户端 ↔ C++ 服务端：TCP 转发可用，单连接吞吐不低于 C++ 版的 80%
-- [ ] Rust 服务端 ↔ C++ 客户端：同上
+- [x] Rust 客户端 ↔ C++ 服务端：TCP 转发可用，单连接吞吐不低于 C++ 版的 80%
+      （实测约 1.2 倍，见 [`benchmark.md`](benchmark.md)）
+- [x] Rust 服务端 ↔ C++ 客户端：同上
+      （实测约 2.0 倍，见 [`benchmark.md`](benchmark.md)）
 - [ ] `mode=client / server / relay` 三种模式均可运行
 - [ ] 6 种加密模式（4 种 AEAD + `xor`、`none`）全部与 C++ 互通
 - [ ] FEC 开启/关闭均可互通
@@ -361,7 +363,7 @@ KCP 本体（ikcp）是标准大端格式。
 
 ---
 
-### M5 relay / tester / 跨平台 / 性能（进行中：relay 与 tester 已完成）
+### M5 relay / tester / 跨平台 / 性能（进行中：relay、tester、Linux 构建与性能基准已完成）
 
 任务：
 
@@ -370,14 +372,14 @@ KCP 本体（ikcp）是标准大端格式。
 - [ ] **平台**：FreeBSD `SO_SETFIB`
 - [x] **平台**：Linux 构建（CI `ubuntu-latest` 已覆盖构建与测试）
 - [ ] **平台**：静态链接落地为脚本/CI 产物（当前仅根 `README.md` 的手动 `cargo zigbuild` 命令）
-- [ ] **性能**：基准测试（吞吐、P99 延迟、内存），与 C++ 版对比
-- [ ] **性能**：必要优化（零拷贝、批量收发、`SO_REUSEPORT`）
+- [x] **性能**：基准测试（吞吐、P99 延迟、内存），与 C++ 版对比（2026-11-01 完成，方法与结果见 [`benchmark.md`](benchmark.md)）
+- [ ] **性能**：必要优化（零拷贝、批量收发、`SO_REUSEPORT`）——基准已达标（Rust↔Rust 吞吐约为 C++ 基线 3.3–4.9 倍），暂不排期
 - [ ] **发布**：交叉编译脚本、GitHub Release、Docker 镜像
 
 验收：
 
 - [x] 三种模式全部可用
-- [ ] 性能达到 C++ 版的 80% 以上（延迟不劣化）
+- [x] 性能达到 C++ 版的 80% 以上（延迟不劣化）——实测远超（见 [`benchmark.md`](benchmark.md)）
 - [x] 至少 Windows + Linux 双平台 CI 绿
 
 ---

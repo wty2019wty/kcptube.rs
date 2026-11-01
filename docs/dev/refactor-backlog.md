@@ -177,12 +177,13 @@ relay 会改变流量模型，等形态固定后再测量更可靠。
 
 **验收**：`cargo clippy -D warnings` 无新增告警；测试数量只减不增（删除死 API 的测试若存在则同步删除）。
 
-### 阶段 4：性能优化（预估 3–5 天，中高风险）
+### 阶段 4：性能优化（基准已测，暂不排期）
 
 先测量，再改：
 
-- [ ] **基线**：记录空闲 1000 会话下的 CPU 秒数、单核吞吐、唤醒次数
-      （可用 `--release` + 简单脚本；必要时新增 `scripts/bench_idle.ps1`）。
+- [x] **基线（吞吐 / 延迟 / 内存）**：2026-11-01 用 `scripts/bench-m5.ps1` 完成，
+      见 [`benchmark.md`](benchmark.md)；Rust↔Rust 吞吐约为 C++ 基线 3.3–4.9 倍、延迟不劣化，
+      因此本阶段的优化项**暂不排期**。空闲 1000 会话的 CPU / 唤醒次数、多连接聚合仍未覆盖。
 - [ ] **4.1 KCP 驱动改为 deadline 驱动**（最大收益）：
   - 服务端 `SocketState::tick_kcp` 用现有的 `KcpUpdater` 替换固定 5ms 全表扫描：
     创建会话时 `schedule`，关闭时 `remove`，`run_driver` 用 `sleep_until(next_deadline)`；
@@ -238,7 +239,7 @@ C++ `relay.cpp` 是 client 逻辑的翻版（内部还有 `via_listener` / `via_
 | 1 公共层收口 | ✅ 已完成（2026-11-01） | 测试 106 → 115 |
 | 2 结构性去重 | 待开始 | |
 | 3 死代码清理 | 待开始 | |
-| 4 性能优化 | 待开始 | 依赖 D1 |
+| 4 性能优化 | 基线已完成，暂不排期 | 见 [`benchmark.md`](benchmark.md)：吞吐与延迟均优于 C++ 基线 |
 | 5 relay 前置 | ✅ 已完成（2026-11-01） | 端口跳跃、保活、握手通道已下沉；空闲清理按 relay 独有规则落在 R2；relay R1–R5 已完成 |
 
 ## 8. 变更记录
@@ -250,3 +251,4 @@ C++ `relay.cpp` 是 client 逻辑的翻版（内部还有 `via_listener` / `via_
 | 2026-11-01 | 完成阶段 5 的前三项（relay 前置）：新增 `transport::PortHop`（端口探测与重绑 IO，client 只留定时/选目标/日志）、`transport::KeepAlive`（client TCP/UDP、mux、服务端四处保活统一）、`transport::open_handshake_channel`（client 握手与端口探测共用）；空闲清理因 relay 判定规则不同，留到 relay R2；测试 115 → 118 |
 | 2026-11-01 | relay R1 落地并确认阶段 5 验收：relay 只保留握手改写与会话分派，通道/探测/保活/握手通道全部复用 `transport`，未复制 client 状态机；测试 118 → 126 |
 | 2026-11-01 | docs: 阶段 5 的空闲清理条目按 relay R2 的实际实现更新（未下沉 `transport`，在 `relay/maintenance.rs` 落地并有单元测试）；2.3 表按代码区分：`keep_alive_*_time` 的 getter 无生产读取者、字段与 `mark_keep_alive_*` 仍被生产写入（不可删），`fec_enabled` / `recv_and_process` 可直接清理 |
+| 2026-11-01 | docs: 阶段 4 基线完成——新增 [`benchmark.md`](benchmark.md)（方法、环境、四场景结果、局限）；结论为 Rust↔Rust 吞吐约 3.3× C++ 基线、两个互操作方向 1.19× / 2.0×、延迟不劣化，阶段 4 的优化项暂不排期 |
