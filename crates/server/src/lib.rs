@@ -4,7 +4,8 @@
 //!
 //! 已实现：UDP 端口范围监听、`initialise` 握手、TCP/UDP/mux 转发、FEC、
 //! 端口跳跃（服务端侧按源地址/监听 socket 重定向）、空闲清理、保活与状态日志。
-//! `[custom_input*]` 映射待接入；STUN/DDNS 属于 M6。
+//! `ignore_destination_*` 目标与 mux `pre_connect_custom_address` 已接入；
+//! STUN/DDNS 属于 M6。
 
 use kcptube_config::UserSettings;
 use kcptube_kcp::{KcpConfig, KcpError};
@@ -419,6 +420,28 @@ impl SocketState {
         protocol: ProtocolType,
         wrapper: SettingsWrapper,
     ) -> Result<(), ServerError> {
+        // 对应 C++ `server.cpp` 的 `switch (prtcl)`：mux 会话在握手阶段
+        // **不**解析目标地址（`connect_success = true`），真正的目标由后续
+        // `pre_connect_custom_address` 或 `mux_transfer` 指定。因此
+        // `ignore_destination_*` 下 mux 隧道仍可建立。
+        if protocol == ProtocolType::Mux {
+            let outbound = if wrapper.inbound_bandwidth > 0 {
+                self.settings
+                    .outbound_bandwidth
+                    .min(wrapper.inbound_bandwidth)
+            } else {
+                self.settings.outbound_bandwidth
+            };
+            let hint = BandwidthHint {
+                outbound,
+                srtt: entry.channel.rx_srtt().await,
+            };
+            let target = self.default_destination().await;
+            return self
+                .establish_mux(socket, peer, entry, protocol, target, hint)
+                .await;
+        }
+
         let (host, port) = match self.target_for(&wrapper) {
             Ok(target) => target,
             Err(error) => {
@@ -462,9 +485,6 @@ impl SocketState {
 
         if protocol == ProtocolType::Udp {
             self.establish_udp(socket, peer, entry, protocol, &target, hint)
-                .await
-        } else if protocol == ProtocolType::Mux {
-            self.establish_mux(socket, peer, entry, protocol, &target, hint)
                 .await
         } else {
             self.establish_tcp(socket, peer, entry, protocol, &target, hint)
@@ -570,7 +590,7 @@ impl SocketState {
         peer: SocketAddr,
         entry: &HandshakeEntry,
         protocol: ProtocolType,
-        target: &Destination,
+        target: Option<Destination>,
         hint: BandwidthHint,
     ) -> Result<(), ServerError> {
         tracing::info!("KCP 握手成功：{peer} -> mux");
@@ -597,7 +617,6 @@ impl SocketState {
         });
 
         let state = self.clone();
-        let target = target.clone();
         tokio::spawn(async move {
             mux_server_event_loop(state, tunnel, target, events).await;
         });
@@ -711,6 +730,29 @@ impl SocketState {
             .first()
             .ok_or_else(|| ServerError::Startup("destination_port is not set".to_string()))?;
         Ok((host, port))
+    }
+
+    /// 配置里的默认目标。
+    ///
+    /// mux 会话在客户端没有先发 `pre_connect_custom_address` 时使用。
+    /// 对应 C++ `create_mux_data_tcp_connection` / `create_mux_data_udp_connection`：
+    /// `ignore_destination_*` 下它们只接受客户端指定的地址，没有默认目标，
+    /// 因此这里返回 `None`，上层会回 `mux_cancel`。
+    async fn default_destination(&self) -> Option<Destination> {
+        if self.settings.ignore_destination_address || self.settings.ignore_destination_port {
+            return None;
+        }
+        let host = self.settings.destination_address_list.first()?.clone();
+        let port = *self.settings.destination_ports.first()?;
+        let address =
+            resolve_endpoint_filtered(&host, port, self.settings.ip_version_only.want_ipv4())
+                .await
+                .ok()?;
+        Some(Destination {
+            host,
+            port,
+            address,
+        })
     }
 
     async fn allocate_conv(&self) -> u32 {
@@ -1063,7 +1105,7 @@ async fn udp_relay_loop(
 async fn mux_server_event_loop(
     state: Arc<SocketState>,
     tunnel: Arc<MuxTunnel>,
-    default_target: Destination,
+    default_target: Option<Destination>,
     mut events: mpsc::Receiver<MuxEvent>,
 ) {
     while let Some(event) = events.recv().await {
@@ -1081,14 +1123,14 @@ async fn mux_server_event_loop(
                             let _ = tunnel.send_cancel(protocol, connection_id).await;
                             continue;
                         }
-                        match create_mux_local(
-                            &state,
-                            &tunnel,
-                            protocol,
-                            connection_id,
-                            &default_target,
-                        )
-                        .await
+                        // 对应 C++：`ignore_destination_*` 下 `create_mux_data_*`
+                        // 拿不到客户端地址时返回 nullptr，上层回 `mux_cancel`。
+                        let Some(target) = default_target.as_ref() else {
+                            let _ = tunnel.send_cancel(protocol, connection_id).await;
+                            continue;
+                        };
+                        match create_mux_local(&state, &tunnel, protocol, connection_id, target)
+                            .await
                         {
                             Ok(record) => record,
                             Err(error) => {
