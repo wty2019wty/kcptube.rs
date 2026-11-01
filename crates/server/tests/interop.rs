@@ -9,6 +9,7 @@ use kcptube_client::Client;
 use kcptube_config::UserSettings;
 use kcptube_relay::Relay;
 use kcptube_server::Server;
+use kcptube_tester::Tester;
 use std::collections::HashSet;
 use std::net::UdpSocket as StdUdpSocket;
 use std::net::{SocketAddr, TcpListener as StdTcpListener};
@@ -1227,4 +1228,76 @@ async fn relay_udp_roundtrip() {
 
     stop(tasks);
     result.expect("relay UDP 往返应在 20 秒内完成");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tester_reports_all_success() {
+    let (echo_port, echo_tasks) = echo_server().await;
+    let server_port = allocate_ports(1);
+    let server_settings = settings(&format!(
+        "mode=server\n\
+         listen_on=127.0.0.1\n\
+         listen_port={server_port}\n\
+         destination_address=127.0.0.1\n\
+         destination_port={echo_port}\n\
+         encryption_password=test-password\n\
+         encryption_algorithm=AES-GCM\n\
+         kcp=regular3\n"
+    ));
+    let server_task = tokio::spawn(async move {
+        let _ = Server::new(server_settings).run().await;
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let client_settings = settings(&format!(
+        "mode=client\n\
+         listen_port={}\n\
+         destination_address=127.0.0.1\n\
+         destination_port={server_port}\n\
+         encryption_password=test-password\n\
+         encryption_algorithm=AES-GCM\n\
+         kcp=regular3\n",
+        allocate_ports(1)
+    ));
+    let results = Tester::new(client_settings)
+        .with_timeout(Duration::from_secs(5))
+        .run()
+        .await
+        .expect("连通性测试应完成");
+
+    server_task.abort();
+    for task in echo_tasks {
+        task.abort();
+    }
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].selected_ip, "127.0.0.1");
+    assert!(results[0].success_ports.contains(&server_port));
+    assert!(results[0].failure_ports.is_empty());
+    assert_eq!(results[0].total_ports, 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tester_reports_failure_for_unreachable_port() {
+    // 只占位、不监听：探测应在超时后记为失败
+    let closed_port = allocate_ports(1);
+    let client_settings = settings(&format!(
+        "mode=client\n\
+         listen_port={}\n\
+         destination_address=127.0.0.1\n\
+         destination_port={closed_port}\n\
+         encryption_password=test-password\n\
+         encryption_algorithm=AES-GCM\n\
+         kcp=regular3\n",
+        allocate_ports(1)
+    ));
+    let results = Tester::new(client_settings)
+        .with_timeout(Duration::from_millis(600))
+        .run()
+        .await
+        .expect("连通性测试应完成");
+
+    assert_eq!(results.len(), 1);
+    assert!(results[0].success_ports.is_empty());
+    assert!(results[0].failure_ports.contains(&closed_port));
 }

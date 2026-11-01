@@ -22,6 +22,7 @@ kcptube-transport = { path = "crates/transport" }
 kcptube-client = { path = "crates/client" }
 kcptube-server = { path = "crates/server" }
 kcptube-relay = { path = "crates/relay" }
+kcptube-tester = { path = "crates/tester" }
 
 # ---- 第三方 ----
 # 异步运行时：对应 C++ 版的 asio + io_context + 线程池

@@ -413,6 +413,7 @@ dependencies = [
  "kcptube-protocol",
  "kcptube-relay",
  "kcptube-server",
+ "kcptube-tester",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -518,8 +519,22 @@ dependencies = [
  "kcptube-logging",
  "kcptube-protocol",
  "kcptube-relay",
+ "kcptube-tester",
  "kcptube-transport",
  "rand",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "kcptube-tester"
+version = "0.1.0"
+dependencies = [
+ "kcptube-config",
+ "kcptube-kcp",
+ "kcptube-protocol",
+ "kcptube-transport",
  "thiserror",
  "tokio",
  "tracing",

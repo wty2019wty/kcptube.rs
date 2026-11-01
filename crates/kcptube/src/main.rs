@@ -20,6 +20,7 @@ use kcptube_config::{RunningMode, UserSettings};
 use kcptube_protocol::APP_NAME;
 use kcptube_relay::Relay;
 use kcptube_server::Server;
+use kcptube_tester::Tester;
 use std::path::PathBuf;
 
 /// 程序版本号的唯一来源：根 `Cargo.toml` 的 `[workspace.package] version`
@@ -130,7 +131,17 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if cli.try_mode {
-        tracing::warn!("连通性测试（--try）尚未实现");
+        for settings in profiles {
+            match settings.mode {
+                RunningMode::Client | RunningMode::Relay => {
+                    if let Err(error) = Tester::new(settings).run().await {
+                        eprintln!("{error}");
+                    }
+                }
+                // 与 C++ 一致：server 等模式不参与连通性测试
+                _ => {}
+            }
+        }
         return Ok(());
     }
 

@@ -18,6 +18,7 @@ kcptube-config.workspace = true
 kcptube-client.workspace = true
 kcptube-server.workspace = true
 kcptube-relay.workspace = true
+kcptube-tester.workspace = true
 clap.workspace = true
 anyhow.workspace = true
 tokio.workspace = true

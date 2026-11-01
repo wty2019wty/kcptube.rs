@@ -1,0 +1,17 @@
+[package]
+name = "kcptube-tester"
+description = "kcptube 连通性测试（--try，对应 C++ tester.cpp）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+kcptube-config.workspace = true
+kcptube-kcp.workspace = true
+kcptube-protocol.workspace = true
+kcptube-transport.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
