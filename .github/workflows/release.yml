@@ -23,38 +23,38 @@ jobs:
             platform: linux
             arch: x86
             target: i686-unknown-linux-musl
-            tool: cross
+            engine: cross
             exe: kcptube
           - os: ubuntu-latest
             platform: linux
             arch: x64
             target: x86_64-unknown-linux-musl
-            tool: cross
+            engine: cross
             exe: kcptube
           - os: ubuntu-latest
             platform: linux
             arch: arm
             target: armv7-unknown-linux-musleabihf
-            tool: cross
+            engine: cross
             exe: kcptube
           - os: ubuntu-latest
             platform: linux
             arch: aarch64
             target: aarch64-unknown-linux-musl
-            tool: cross
+            engine: cross
             exe: kcptube
           # ---- Windows：msvc 静态 CRT，x86 / x64 ----
           - os: windows-latest
             platform: windows
             arch: x86
             target: i686-pc-windows-msvc
-            tool: native
+            engine: host
             exe: kcptube.exe
           - os: windows-latest
             platform: windows
             arch: x64
             target: x86_64-pc-windows-msvc
-            tool: native
+            engine: host
             exe: kcptube.exe
     runs-on: ${{ matrix.os }}
     steps:
@@ -71,7 +71,7 @@ jobs:
       # Linux 非本地架构（x86/arm/aarch64）用 cross（Docker + 交叉工具链）构建；
       # x64 也走 cross，保证 4 个 Linux 目标只有一条构建路径。
       - name: 安装 cross
-        if: matrix.tool == 'cross'
+        if: matrix.engine == 'cross'
         uses: taiki-e/install-action@cross
 
       - name: 读取版本号
@@ -88,11 +88,11 @@ jobs:
           "version=$($match.Groups[1].Value)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: 构建（Linux musl 静态）
-        if: matrix.tool == 'cross'
+        if: matrix.engine == 'cross'
         run: cross build --release -p kcptube --target ${{ matrix.target }}
 
       - name: 构建（Windows 静态 CRT）
-        if: matrix.tool == 'native'
+        if: matrix.engine == 'host'
         shell: pwsh
         env:
           # 静态 CRT：发布包不依赖 VC++ 运行时（x86 / x64 均适用）。

@@ -2,7 +2,7 @@ name: rust
 
 on:
   push:
-    branches: [main, rs-dev]
+    branches: [rs-dev]
   pull_request:
 
 permissions:
@@ -13,7 +13,7 @@ env:
 
 jobs:
   test:
-    name: test (${{ matrix.os }})
+    name: check (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -39,26 +39,30 @@ jobs:
       - name: 测试
         run: cargo test --workspace
 
-  # 发布矩阵里的非本地架构只做「能编译」验证：交叉编译需要 Docker/QEMU 才能跑测试，
-  # 端到端用例又会绑定真实端口，跑在模拟器里既慢又不稳，因此不在这里执行。
+  # 发布矩阵里的其余架构只做「能编译」验证：交叉编译后要跑测试得靠 QEMU，
+  # 端到端用例又绑定真实端口，在模拟器里既慢又不稳，因此不在这里执行。
+  # engine 只表示用哪种方式构建：cross（Docker 交叉工具链）/ host（本机工具链 + 交叉 target）。
   cross-check:
-    name: check (${{ matrix.target }})
+    name: "check (build-only: ${{ matrix.target }})"
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             target: i686-unknown-linux-musl
-            tool: cross
+            engine: cross
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            engine: cross
           - os: ubuntu-latest
             target: armv7-unknown-linux-musleabihf
-            tool: cross
+            engine: cross
           - os: ubuntu-latest
             target: aarch64-unknown-linux-musl
-            tool: cross
+            engine: cross
           - os: windows-latest
             target: i686-pc-windows-msvc
-            tool: native
+            engine: host
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -74,13 +78,13 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: 安装 cross
-        if: matrix.tool == 'cross'
+        if: matrix.engine == 'cross'
         uses: taiki-e/install-action@cross
 
-      - name: 交叉编译检查（Linux）
-        if: matrix.tool == 'cross'
+      - name: 交叉编译检查（Linux musl）
+        if: matrix.engine == 'cross'
         run: cross check --workspace --all-targets --target ${{ matrix.target }}
 
-      - name: 交叉编译检查（Windows x86）
-        if: matrix.tool == 'native'
+      - name: 编译检查（Windows x86）
+        if: matrix.engine == 'host'
         run: cargo check --workspace --all-targets --target ${{ matrix.target }}
