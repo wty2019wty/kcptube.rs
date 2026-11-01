@@ -110,7 +110,7 @@ Rust 版只对外自报一个版本号，来源是根 `Cargo.toml` 里声明的 
 | [自定义映射](custom-ip-mappings.md) | `[custom_input*]` 映射规则（TCP / UDP / mux 均已接入） |
 | [具体示例](specific-examples.md) | OpenVPN、HTTP、Shadowsocks、游戏等场景示例 |
 
-移植计划、进度与已知问题见开发者文档：[移植计划](migration-plan.md)、[移植进度](progress.md)。
+移植计划、进度与已知问题见开发者文档：[移植计划](migration-plan.md)、[移植进度](progress.md)、[优化与去重路线](refactor-backlog.md)。
 
 ## 配置文件生成器
 
