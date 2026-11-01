@@ -35,6 +35,7 @@
 mod parser;
 
 use kcptube_crypto::EncryptionMode;
+use kcptube_kcp::KcpConfig;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use thiserror::Error;
@@ -310,6 +311,31 @@ impl UserSettings {
         self.fec_original_packet_count > 0 && self.fec_redundant_packet_count > 0
     }
 
+    /// FEC 参数 `(原始包数 k, 冗余包数 r)`；未启用时为 `None`。
+    pub fn fec_parameters(&self) -> Option<(u8, u8)> {
+        self.fec_enabled().then_some((
+            self.fec_original_packet_count,
+            self.fec_redundant_packet_count,
+        ))
+    }
+
+    /// 数据通道的 KCP 参数（对应 C++ `kcp_mappings` 构造时的 `current_settings` 映射）。
+    ///
+    /// 握手通道使用固定参数，见 `kcptube_kcp::KcpConfig::handshake`。
+    pub fn kcp_config(&self, conv: u32) -> KcpConfig {
+        KcpConfig {
+            conv,
+            mtu: self.kcp_mtu.max(50) as usize,
+            nodelay: self.kcp_nodelay,
+            interval: self.kcp_interval.max(1) as u32,
+            resend: self.kcp_resend.max(0) as u32,
+            no_congestion_control: self.kcp_nc != 0,
+            send_window: self.kcp_sndwnd,
+            receive_window: self.kcp_rcvwnd,
+            stream_mode: false,
+        }
+    }
+
     /// 日志文件是否可用（对应 C++ `log_status` 是否为空）
     pub fn has_status_log(&self) -> bool {
         !self.log_status.as_os_str().is_empty()
@@ -478,6 +504,64 @@ mod tests {
                 .iter()
                 .any(|e| e.to_string() == "invalid fec format: 10")
         );
+    }
+
+    #[test]
+    fn kcp_config_maps_settings() {
+        let settings = parse(&sample("config_sample_client.conf")).expect("应解析成功");
+        let config = settings.kcp_config(0x1234_5678);
+        assert_eq!(config.conv, 0x1234_5678);
+        assert_eq!(config.mtu, settings.kcp_mtu as usize);
+        assert_eq!(config.nodelay, settings.kcp_nodelay);
+        assert_eq!(config.interval, settings.kcp_interval as u32);
+        assert_eq!(config.resend, settings.kcp_resend as u32);
+        assert_eq!(config.no_congestion_control, settings.kcp_nc != 0);
+        assert_eq!(config.send_window, settings.kcp_sndwnd);
+        assert_eq!(config.receive_window, settings.kcp_rcvwnd);
+        assert!(!config.stream_mode);
+    }
+
+    #[test]
+    fn kcp_config_clamps_fast_preset_interval() {
+        // C++ 预设 fast1/fast2 的 kcp_interval 为 0，KCP 侧统一按 1ms 驱动
+        let settings = parse(
+            "mode=client\nlisten_port=5099\ndestination_port=80\ndestination_address=127.0.0.1\nkcp=fast1",
+        )
+        .expect("应解析成功");
+        assert_eq!(settings.kcp_interval, 0);
+        assert_eq!(settings.kcp_config(0).interval, 1);
+    }
+
+    #[test]
+    fn fec_parameters_matches_fec_enabled() {
+        let without = parse(
+            "mode=server\nlisten_port=30000\ndestination_port=80\ndestination_address=127.0.0.1",
+        )
+        .expect("应解析成功");
+        assert!(!without.fec_enabled());
+        assert_eq!(without.fec_parameters(), None);
+
+        let with = parse(
+            "mode=server\nlisten_port=30000\ndestination_port=80\ndestination_address=127.0.0.1\nfec=10:3",
+        )
+        .expect("应解析成功");
+        assert!(with.fec_enabled());
+        assert_eq!(with.fec_parameters(), Some((10, 3)));
+    }
+
+    #[test]
+    fn handshake_config_matches_cpp() {
+        let config = KcpConfig::handshake(1418);
+        assert_eq!(config.conv, 0);
+        assert_eq!(config.mtu, 1418);
+        assert_eq!(config.nodelay, 1);
+        assert_eq!(config.interval, 1);
+        assert_eq!(config.resend, 3);
+        assert!(config.no_congestion_control);
+        assert_eq!(config.send_window, 32);
+        assert_eq!(config.receive_window, 128);
+        // MTU 下限与 C++ 一致
+        assert_eq!(KcpConfig::handshake(10).mtu, 50);
     }
 
     #[test]

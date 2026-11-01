@@ -8,7 +8,8 @@ use crate::relay::{tcp_reader_loop, udp_relay_loop};
 use crate::state::{
     BandwidthHint, DataSession, Destination, HandshakeEntry, SessionKind, SocketState,
 };
-use crate::util::{data_config, handshake_config, is_continuous};
+use crate::util::is_continuous;
+use kcptube_kcp::KcpConfig;
 use kcptube_kcp::KcpError;
 use kcptube_protocol::packet::{
     Feature, ProtocolType, SettingsWrapper, create_test_connection_packet, inform_error_packet,
@@ -16,7 +17,7 @@ use kcptube_protocol::packet::{
 };
 use kcptube_transport::{
     IncomingFrame, KcpChannel, MAX_INNER_MESSAGE, MuxTunnel, TcpSession, TransportError,
-    UdpEndpoint, now_ms, now_secs, resolve_endpoint_filtered,
+    UdpEndpoint, now_ms, now_secs, resolve_endpoint_filtered, wildcard_addr,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -75,24 +76,20 @@ impl SocketState {
         let channel = Arc::new(
             KcpChannel::new_with_fec(
                 self.codec.clone(),
-                handshake_config(self.settings.kcp_mtu),
+                KcpConfig::handshake(self.settings.kcp_mtu),
                 socket.clone(),
                 peer,
                 self.fec,
             )
             .await?,
         );
-        channel.set_blast(self.settings.blast);
         channel
-            .set_bandwidth(
+            .apply_handshake_tuning(
+                self.settings.blast,
                 self.settings.outbound_bandwidth,
                 self.settings.inbound_bandwidth,
             )
             .await;
-        {
-            let mut kcp = channel.endpoint.kcp.lock().await;
-            kcp.set_rx_minrto(10);
-        }
         let entry = Arc::new(HandshakeEntry {
             channel,
             established: AtomicBool::new(false),
@@ -241,11 +238,7 @@ impl SocketState {
             port,
             address,
         } = target;
-        let bind: SocketAddr = if address.is_ipv4() {
-            SocketAddr::from(([0, 0, 0, 0], 0))
-        } else {
-            SocketAddr::from(([0u16; 8], 0))
-        };
+        let bind: SocketAddr = wildcard_addr(*address);
         let udp = match UdpEndpoint::bind(bind).await {
             Ok(endpoint) => endpoint,
             Err(error) => {
@@ -326,23 +319,21 @@ impl SocketState {
         let channel = Arc::new(
             KcpChannel::new_with_fec(
                 self.codec.clone(),
-                data_config(&self.settings, conv),
+                self.settings.kcp_config(conv),
                 socket.clone(),
                 peer,
                 self.fec,
             )
             .await?,
         );
-        channel.set_blast(self.settings.blast);
         channel
-            .set_bandwidth(hint.outbound, self.settings.inbound_bandwidth)
+            .apply_data_tuning(
+                self.settings.blast,
+                hint.outbound,
+                self.settings.inbound_bandwidth,
+                hint.srtt,
+            )
             .await;
-        channel.reset_window_values(hint.srtt).await;
-        {
-            let mut kcp = channel.endpoint.kcp.lock().await;
-            kcp.set_rx_minrto(10);
-            kcp.update(now_ms());
-        }
         Ok((conv, channel))
     }
 

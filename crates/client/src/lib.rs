@@ -125,7 +125,7 @@ impl Client {
 
         // 状态摘要任务：只有配置了 `log_status`（即设置了 `log_path`）时才启动，
         // 与 C++ `if (!current_settings.log_status.empty())` 一致
-        if !state.settings.log_status.as_os_str().is_empty() {
+        if state.settings.has_status_log() {
             let state = state.clone();
             tasks.spawn(async move {
                 let mut ticker = interval(Duration::from_secs(1));

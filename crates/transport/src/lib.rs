@@ -25,7 +25,7 @@ pub use channel::KcpChannel;
 pub use fec::{FecReceiver, FecSender};
 pub use mux::{MuxCommand, MuxEvent, MuxRecord, MuxSink, MuxTcpSink, MuxTunnel};
 pub use tcp::{TcpListenerSession, TcpSession};
-pub use udp::{UdpBindOptions, UdpEndpoint};
+pub use udp::{UdpBindOptions, UdpEndpoint, wildcard_addr};
 
 use kcptube_crypto::{Cipher, CryptoError, EncryptionMode};
 use kcptube_kcp::{Kcp, KcpConfig, KcpError};
@@ -41,6 +41,18 @@ use tokio::sync::Mutex;
 
 /// 单条 KCP 消息的最大长度（KCP 会把分片重组成一条消息，可能远大于单个 UDP 包）。
 pub const MAX_INNER_MESSAGE: usize = 65536;
+
+/// Windows 上向不可达的 UDP 目标发包时，ICMP 端口不可达会以
+/// `ConnectionReset` / `ConnectionAborted`（WSAECONNRESET）的形式回传给下一次 recv。
+///
+/// 对应 C++ `udp_client::handle_receive` 里对 `error` 的「重新挂起接收」处理：
+/// 这类错误不代表链路本身有问题，只应记 trace 并继续。
+pub fn is_connection_reset(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+    )
+}
 
 /// 单个 UDP 数据报的加解密与包层处理（对应 C++ `encrypt_data` + `create_packet`）。///
 /// 顺序：`data_layer 负载` → 加 `packet_layer` 时间戳 → 加密（尾部带 `iv_raw`）。
@@ -447,6 +459,24 @@ mod tests {
         let updater = KcpUpdater::new();
         assert!(updater.is_empty());
         assert_eq!(updater.next_deadline(), None);
+    }
+
+    #[test]
+    fn wildcard_matches_peer_family() {
+        let v4: SocketAddr = "1.2.3.4:80".parse().expect("地址");
+        assert_eq!(wildcard_addr(v4), "0.0.0.0:0".parse().expect("地址"));
+        let v6: SocketAddr = "[::1]:80".parse().expect("地址");
+        assert_eq!(wildcard_addr(v6), "[::]:0".parse().expect("地址"));
+    }
+
+    #[test]
+    fn connection_reset_kinds() {
+        let reset = std::io::Error::from(std::io::ErrorKind::ConnectionReset);
+        let aborted = std::io::Error::from(std::io::ErrorKind::ConnectionAborted);
+        let timed_out = std::io::Error::from(std::io::ErrorKind::TimedOut);
+        assert!(is_connection_reset(&reset));
+        assert!(is_connection_reset(&aborted));
+        assert!(!is_connection_reset(&timed_out));
     }
 
     #[test]

@@ -57,6 +57,60 @@ pub fn print_ip_to_file(path: &Path, message: &str) -> io::Result<()> {
     print_status_to_file(path, message)
 }
 
+/// 记录一条运行期告警：既写入 `log_messages`（带时间戳、追加），也输出到 tracing。
+///
+/// 对应 C++ 各 mode 里的 `std::cerr` / `PrintMessageToFile` 组合写法。
+/// 路径为空时只输出到 tracing，与 C++ `if (log_file.empty())` 的早退语义一致。
+pub fn log_warning(path: &Path, message: &str) {
+    tracing::warn!("{}", message);
+    let line = format!("{}{message}\n", time_string_with_brackets());
+    let _ = print_message_to_file(path, &line);
+}
+
+/// 状态摘要的输入。数值字符串已由 [`to_speed_unit`] 格式化。
+pub struct StatusSummary<'a> {
+    /// 配置文件路径（C++ 打印 `config_filename` 原样）
+    pub config_filename: &'a str,
+    pub receive_raw: &'a str,
+    pub receive_inner: &'a str,
+    pub send_inner: &'a str,
+    pub send_raw: &'a str,
+    pub fec_recover: u64,
+    /// `(conv, srtt 毫秒)`，按 C++ 的 `KCP#<conv> average latency` 逐行输出
+    pub latencies: &'a [(u32, i32)],
+}
+
+impl StatusSummary<'_> {
+    /// 拼出与 C++ `loop_get_status` 一致的摘要文本（末尾留一个空行）。
+    pub fn format(&self) -> String {
+        let mut output = format!(
+            "{}Summary of {}\n",
+            time_string_with_brackets(),
+            self.config_filename
+        );
+        output.push_str(&format!(
+            "receive (raw): {}, receive (inner): {}, send (inner): {}, send (raw): {}, fec recover: {}\n",
+            self.receive_raw,
+            self.receive_inner,
+            self.send_inner,
+            self.send_raw,
+            self.fec_recover
+        ));
+        for (conv, srtt) in self.latencies {
+            output.push_str(&format!("KCP#{conv} average latency: {srtt} ms\n"));
+        }
+        output.push('\n');
+        output
+    }
+}
+
+/// 写 `log_status` 并打印到标准输出（对应 C++ `std::cout << output_text << std::endl`）。
+pub fn print_status_summary(path: &Path, summary: &StatusSummary<'_>) {
+    let output = summary.format();
+    let _ = print_status_to_file(path, &output);
+    println!("{output}");
+}
+
 /// 把「统计周期内的字节数」转换成 C++ `to_speed_unit()` 的文本形式。
 ///
 /// 复刻了 C++ 的分档逻辑（含 `value_per_second == 0` 时输出总量而非速度这一特殊行为）。
@@ -161,6 +215,52 @@ mod tests {
         assert!(print_message_to_file(Path::new(""), "x").is_ok());
         assert!(print_status_to_file(Path::new(""), "x").is_ok());
         assert!(print_ip_to_file(Path::new(""), "x").is_ok());
+        // 空路径只输出到 tracing，不产生副作用
+        log_warning(Path::new(""), "仅日志");
+    }
+
+    #[test]
+    fn status_summary_format_matches_cpp() {
+        let latencies = [(1, 4), (2, 7)];
+        let summary = StatusSummary {
+            config_filename: "client.conf",
+            receive_raw: "10 KiB/s",
+            receive_inner: "9 KiB/s",
+            send_inner: "8 KiB/s",
+            send_raw: "7 KiB/s",
+            fec_recover: 3,
+            latencies: &latencies,
+        };
+        let output = summary.format();
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines.len(), 5);
+        assert!(
+            lines[0].ends_with("] Summary of client.conf"),
+            "标题行：{}",
+            lines[0]
+        );
+        assert_eq!(
+            lines[1],
+            "receive (raw): 10 KiB/s, receive (inner): 9 KiB/s, send (inner): 8 KiB/s, send (raw): 7 KiB/s, fec recover: 3"
+        );
+        assert_eq!(lines[2], "KCP#1 average latency: 4 ms");
+        assert_eq!(lines[3], "KCP#2 average latency: 7 ms");
+        // 末尾固定补一个空行（对应 C++ `<< std::endl`）
+        assert_eq!(lines[4], "");
+    }
+
+    #[test]
+    fn warning_appends_with_timestamp() {
+        let dir = std::env::temp_dir().join(format!("kcptube-warning-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("创建临时目录");
+        let path = dir.join("messages.log");
+
+        log_warning(&path, "握手失败");
+        let content = std::fs::read_to_string(&path).expect("读取");
+        assert!(content.starts_with('['), "{content}");
+        assert!(content.ends_with("握手失败\n"), "{content}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

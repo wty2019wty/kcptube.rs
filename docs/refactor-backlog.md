@@ -127,31 +127,34 @@ relay 的具体设计与分步实施见 [`relay-plan.md`](relay-plan.md)（R0–
 不在重写前做的事：每包分配优化、`Bytes`/buffer pool 等微优化。
 relay 会改变流量模型，等形态固定后再测量更可靠。
 
-### 阶段 1：公共层收口（预估 1–2 天，低风险）
+### 阶段 1：公共层收口（已完成，2026-11-01）
 
-- [ ] `transport`：
-  - 新增 `is_connection_reset(&io::Error)`（放在 `lib.rs` 或 `udp.rs` 并导出）；
-  - 新增 `udp::wildcard_addr(SocketAddr)`；
+- [x] `transport`：
+  - 新增 `is_connection_reset(&io::Error)`（`lib.rs`，已导出）；
+  - 新增 `udp::wildcard_addr(SocketAddr)`（已导出）；
   - `KcpChannel` 增加：
     - `set_rx_minrto(value)`；
     - `apply_handshake_tuning(blast, outbound, inbound)`；
     - `apply_data_tuning(blast, outbound, inbound, srtt)`（含 `reset_window_values` 与一次 `update`）。
-- [ ] `config`：
+- [x] `config`：
   - 新增 `UserSettings::kcp_config(conv)`、`fec_parameters()`；
   - 客户端/服务端改用 `has_status_log()`；
   - 删除 `client/src/util.rs`、`server/src/util.rs` 中的 `handshake_config` / `data_config` / `fec_pair`。
-- [ ] `logging`：
+- [x] `kcp`：新增 `KcpConfig::handshake(mtu)`，取代两份 `handshake_config`。
+- [x] `logging`：
   - 新增 `log_warning(log_messages, message)`；
-  - 新增 `format_status_summary(...)` / `print_status_summary(...)`，参数包括
-    `config_filename`、四项速率、`fec_recover`、`latencies`；
+  - 新增 `StatusSummary` + `print_status_summary(...)`（`config_filename`、四项速率、
+    `fec_recover`、`latencies`）；
   - `client/src/state.rs` 与 `server/src/status.rs` 改为调用。
-- [ ] `KcpChannel` 初始化替换 4 处调用点。
-- [ ] 新增测试：
-  - `UserSettings::kcp_config` 与 C++ 预设值对照；
+- [x] `KcpChannel` 初始化替换 5 处调用点（客户端握手/数据、服务端握手/数据、客户端端口探测）。
+- [x] 新增测试：
+  - `UserSettings::kcp_config` 与 C++ 预设值对照（含 fast1 `interval=0→1` 的钳制）；
   - 状态摘要格式快照（固定输入 → 固定字符串）；
-  - `fec_parameters` 与 `fec_enabled` 一致性。
+  - `fec_parameters` 与 `fec_enabled` 一致性；
+  - `KcpConfig::handshake` 与 C++ 固定参数对照；
+  - `wildcard_addr` / `is_connection_reset` / `apply_*_tuning` 单测。
 
-**验收**：上述符号全库只剩一份；106 个测试全绿；状态日志与重构前逐字一致。
+**验收**：上述符号全库只剩一份；115 个测试全绿；状态日志与重构前逐字一致。
 
 ### 阶段 2：结构性去重（预估 2–3 天，中风险）
 
@@ -222,14 +225,15 @@ C++ `relay.cpp` 是 client 逻辑的翻版（内部还有 `via_listener` / `via_
 
 | 阶段 | 状态 | 备注 |
 |---|---|---|
-| 1 公共层收口 | 待开始 | |
+| 1 公共层收口 | ✅ 已完成（2026-11-01） | 测试 106 → 115 |
 | 2 结构性去重 | 待开始 | |
 | 3 死代码清理 | 待开始 | |
 | 4 性能优化 | 待开始 | 依赖 D1 |
-| 5 relay 前置 | 待开始 | 依赖阶段 1–2 |
+| 5 relay 前置 | 待开始 | 依赖阶段 1–2（阶段 1 已就绪） |
 
 ## 8. 变更记录
 
 | 日期 | 内容 |
 |---|---|
 | 2026-11-01 | 建立本文档：记录跨模块重复审计、与 C++ 原版对照、分阶段优化路线与决策 D1–D5；补充 5.0 实施顺序（先完成 M5/M6，阶段 1/5 作为 relay 前置，阶段 4 后置） |
+| 2026-11-01 | 完成阶段 1 公共层收口：`is_connection_reset` / `wildcard_addr` / `KcpChannel::{set_rx_minrto, apply_handshake_tuning, apply_data_tuning}` 下沉到 transport；`UserSettings::{kcp_config, fec_parameters}` 与 `KcpConfig::handshake` 下沉到 config/kcp；`log_warning` / `StatusSummary` + `print_status_summary` 下沉到 logging；删除 client/server 两份 `util.rs` 重复函数，5 处通道初始化改为调用助手；测试 106 → 115 |

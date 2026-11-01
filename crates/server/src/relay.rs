@@ -3,11 +3,10 @@
 //! 本地目标到 KCP 通道的读取转发任务。
 
 use crate::state::DataSession;
-use crate::util::is_connection_reset;
 use kcptube_logging::StatusCounters;
 use kcptube_protocol::constant::KEEPALIVE_TIMEOUT;
 use kcptube_protocol::packet::{ProtocolType, create_data_packet, inform_disconnect_packet};
-use kcptube_transport::{UdpEndpoint, now_secs};
+use kcptube_transport::{UdpEndpoint, is_connection_reset, now_secs};
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 

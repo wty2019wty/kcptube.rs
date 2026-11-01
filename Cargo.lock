@@ -438,6 +438,7 @@ name = "kcptube-config"
 version = "0.1.0"
 dependencies = [
  "kcptube-crypto",
+ "kcptube-kcp",
  "kcptube-protocol",
  "thiserror",
  "tracing",
@@ -482,6 +483,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]

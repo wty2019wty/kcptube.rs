@@ -2,11 +2,8 @@
 
 //! 服务端运行期状态：握手表、数据会话表与共享 socket 状态。
 
-use crate::util::fec_pair;
 use kcptube_config::UserSettings;
-use kcptube_logging::{
-    LOGGING_GAP_SECONDS, StatusCounters, print_message_to_file, time_string_with_brackets,
-};
+use kcptube_logging::{LOGGING_GAP_SECONDS, StatusCounters, log_warning};
 use kcptube_protocol::packet::ProtocolType;
 use kcptube_transport::{KcpChannel, MuxTunnel, PacketCodec, UdpEndpoint, now_secs};
 use std::collections::HashMap;
@@ -144,7 +141,7 @@ pub(crate) struct SocketState {
 
 impl SocketState {
     pub(crate) fn new(settings: Arc<UserSettings>, codec: Arc<PacketCodec>) -> Self {
-        let fec = fec_pair(&settings);
+        let fec = settings.fec_parameters();
         let fec_original = fec.map(|(original, _)| original as usize);
         let next_status_at = AtomicI64::new(now_secs() + LOGGING_GAP_SECONDS as i64);
         Self {
@@ -160,8 +157,6 @@ impl SocketState {
     }
 
     pub(crate) fn log_message(&self, message: &str) {
-        let line = format!("{}{message}\n", time_string_with_brackets());
-        tracing::warn!("{}", message);
-        let _ = print_message_to_file(&self.settings.log_messages, &line);
+        log_warning(&self.settings.log_messages, message);
     }
 }

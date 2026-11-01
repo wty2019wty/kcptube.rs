@@ -5,7 +5,6 @@
 use crate::ClientError;
 use crate::handshake::establish_channel;
 use crate::state::ClientState;
-use crate::util::is_connection_reset;
 use kcptube_kcp::KcpError;
 use kcptube_protocol::constant::{KCP_CLEANUP_WAITS, PACKET_LENGTH};
 use kcptube_protocol::packet::{
@@ -13,7 +12,8 @@ use kcptube_protocol::packet::{
     create_keep_alive_response_packet, inform_disconnect_packet, unpack_inner,
 };
 use kcptube_transport::{
-    KcpChannel, MAX_INNER_MESSAGE, TransportError, UdpEndpoint, now_ms, now_secs,
+    KcpChannel, MAX_INNER_MESSAGE, TransportError, UdpEndpoint, is_connection_reset, now_ms,
+    now_secs,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;

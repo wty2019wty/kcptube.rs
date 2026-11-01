@@ -4,8 +4,7 @@
 
 use crate::state::{DataSession, HandshakeEntry, SocketState};
 use kcptube_logging::{
-    LOGGING_GAP_SECONDS, StatusCounters, print_status_to_file, time_string_with_brackets,
-    to_speed_unit,
+    LOGGING_GAP_SECONDS, StatusCounters, StatusSummary, print_status_summary, to_speed_unit,
 };
 use kcptube_transport::now_secs;
 use std::sync::Arc;
@@ -16,7 +15,7 @@ impl SocketState {
     ///
     /// 与 C++ 一致：只有配置了 `log_status`（即设置了 `log_path`）时才输出。
     pub(crate) async fn maybe_log_status(&self) {
-        if self.settings.log_status.as_os_str().is_empty() {
+        if !self.settings.has_status_log() {
             return;
         }
         let now = now_secs();
@@ -63,21 +62,16 @@ impl SocketState {
         let send_raw = to_speed_unit(send_raw_bytes, duration);
         let fec_recover = StatusCounters::take(&self.counters.fec_recovery_count);
 
-        let mut output = format!(
-            "{}Summary of {}\n",
-            time_string_with_brackets(),
-            self.settings.config_filename.display()
-        );
-        output.push_str(&format!(
-            "receive (raw): {receive_raw}, receive (inner): {receive_inner}, send (inner): {send_inner}, send (raw): {send_raw}, fec recover: {fec_recover}\n"
-        ));
-        for (conv, srtt) in latencies {
-            output.push_str(&format!("KCP#{conv} average latency: {srtt} ms\n"));
-        }
-        output.push('\n');
-
-        let _ = print_status_to_file(&self.settings.log_status, &output);
-        // 对应 C++ `std::cout << output_text << std::endl;`（末尾再补一个换行）
-        println!("{output}");
+        let config_filename = self.settings.config_filename.display().to_string();
+        let summary = StatusSummary {
+            config_filename: &config_filename,
+            receive_raw: &receive_raw,
+            receive_inner: &receive_inner,
+            send_inner: &send_inner,
+            send_raw: &send_raw,
+            fec_recover,
+            latencies: &latencies,
+        };
+        print_status_summary(&self.settings.log_status, &summary);
     }
 }

@@ -4,9 +4,8 @@
 
 use crate::ServerError;
 use crate::state::SocketState;
-use crate::util::is_connection_reset;
 use kcptube_protocol::constant::PACKET_LENGTH;
-use kcptube_transport::{UdpEndpoint, parse_frame};
+use kcptube_transport::{UdpEndpoint, is_connection_reset, parse_frame};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::time::{Duration, interval};

@@ -34,6 +34,7 @@ cargo test --workspace
 ## 目录与边界
 
 - 纯逻辑 crate：`protocol` / `crypto` / `fec` / `kcp`（零 IO）与 `config`（只解析，无网络）。它们**不得依赖 tokio**。
+  `config` 允许依赖 `kcp`，仅用于 `KcpConfig` 的纯参数映射（无 IO、无环）。
 - `transport`：tokio 版 asio 层（会话、KCP 调度、加密包层、FEC、mux）。
 - `client` / `server` / `relay`：三种运行模式；`kcptube` 是唯一的 bin（clap）。
 - 未实现（不要当成 bug 顺手补）：`relay` 仅有入口、`--try` 只打印提示、STUN/DDNS、

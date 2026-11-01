@@ -4,11 +4,11 @@
 
 use crate::ClientError;
 use crate::mux::mux_event_loop;
-use crate::util::{fec_pair, random_pick};
+use crate::util::random_pick;
 use kcptube_config::UserSettings;
 use kcptube_logging::{
-    LOGGING_GAP_SECONDS, StatusCounters, print_message_to_file, print_status_to_file,
-    time_string_with_brackets, to_speed_unit,
+    LOGGING_GAP_SECONDS, StatusCounters, StatusSummary, log_warning, print_status_summary,
+    to_speed_unit,
 };
 use kcptube_transport::{KcpChannel, MuxRecord, MuxTunnel, PacketCodec, now_secs};
 use std::collections::HashMap;
@@ -39,7 +39,7 @@ pub(crate) struct ClientState {
 
 impl ClientState {
     pub(crate) fn new(settings: Arc<UserSettings>, codec: Arc<PacketCodec>) -> Self {
-        let fec = fec_pair(&settings);
+        let fec = settings.fec_parameters();
         let destination_ports = RwLock::new(settings.destination_ports.clone());
         let next_status_at = AtomicI64::new(now_secs() + LOGGING_GAP_SECONDS as i64);
         Self {
@@ -69,9 +69,7 @@ impl ClientState {
     }
 
     pub(crate) fn log_message(&self, message: &str) {
-        let line = format!("{}{message}\n", time_string_with_brackets());
-        tracing::warn!("{}", message);
-        let _ = print_message_to_file(&self.settings.log_messages, &line);
+        log_warning(&self.settings.log_messages, message);
     }
 
     /// 随机挑一个目标地址与目标端口（对应 C++ `randomly_pick_index` +
@@ -197,21 +195,16 @@ impl ClientState {
         let send_raw = to_speed_unit(send_raw_bytes, duration);
         let fec_recover = StatusCounters::take(&self.counters.fec_recovery_count);
 
-        let mut output = format!(
-            "{}Summary of {}\n",
-            time_string_with_brackets(),
-            self.settings.config_filename.display()
-        );
-        output.push_str(&format!(
-            "receive (raw): {receive_raw}, receive (inner): {receive_inner}, send (inner): {send_inner}, send (raw): {send_raw}, fec recover: {fec_recover}\n"
-        ));
-        for (conv, srtt) in &latencies {
-            output.push_str(&format!("KCP#{conv} average latency: {srtt} ms\n"));
-        }
-        output.push('\n');
-
-        let _ = print_status_to_file(&self.settings.log_status, &output);
-        // 对应 C++ `std::cout << output_text << std::endl;`（末尾再补一个换行）
-        println!("{output}");
+        let config_filename = self.settings.config_filename.display().to_string();
+        let summary = StatusSummary {
+            config_filename: &config_filename,
+            receive_raw: &receive_raw,
+            receive_inner: &receive_inner,
+            send_inner: &send_inner,
+            send_raw: &send_raw,
+            fec_recover,
+            latencies: &latencies,
+        };
+        print_status_summary(&self.settings.log_status, &summary);
     }
 }

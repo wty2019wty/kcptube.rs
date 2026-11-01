@@ -4,12 +4,13 @@
 
 use crate::ClientError;
 use crate::state::ClientState;
-use crate::util::{handshake_config, wildcard_addr};
+use kcptube_kcp::KcpConfig;
 use kcptube_kcp::KcpError;
 use kcptube_protocol::constant::{PACKET_LENGTH, RECEIVER_CLEANUP_WAITS};
 use kcptube_protocol::packet::{Feature, create_test_connection_packet, unpack_inner};
 use kcptube_transport::{
     KcpChannel, MAX_INNER_MESSAGE, TransportError, UdpEndpoint, now_ms, resolve_endpoints_filtered,
+    wildcard_addr,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -88,18 +89,17 @@ async fn probe_candidate(
     let probe = Arc::new(
         KcpChannel::new_with_fec(
             state.codec.clone(),
-            handshake_config(state.settings.kcp_mtu),
+            KcpConfig::handshake(state.settings.kcp_mtu),
             socket.clone(),
             peer,
             state.fec,
         )
         .await?,
     );
+    // 探测通道只需要 blast 与最小重传超时（与 C++ `test_before_change` 一致地
+    // 不参与带宽限制），不写入数据通道的窗口参数。
     probe.set_blast(true);
-    {
-        let mut kcp = probe.endpoint.kcp.lock().await;
-        kcp.set_rx_minrto(10);
-    }
+    probe.set_rx_minrto(10).await;
     probe.send(&create_test_connection_packet()).await?;
     probe.update(now_ms()).await?;
 

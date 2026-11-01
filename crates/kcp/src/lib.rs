@@ -94,6 +94,26 @@ impl Default for KcpConfig {
     }
 }
 
+impl KcpConfig {
+    /// 握手通道的固定参数（对应 C++ `create_handshake` 里的 `kcp_mappings` 构造）。
+    ///
+    /// 与数据通道不同：`nodelay = 1`、`interval = 1ms`、`resend = 3`、
+    /// 窗口固定 32 / 128，不受配置里的 `kcp_*` 影响。
+    pub fn handshake(mtu: i32) -> Self {
+        Self {
+            conv: 0,
+            mtu: mtu.max(50) as usize,
+            nodelay: 1,
+            interval: 1,
+            resend: 3,
+            no_congestion_control: true,
+            send_window: 32,
+            receive_window: 128,
+            stream_mode: false,
+        }
+    }
+}
+
 /// 默认 KCP MTU（对应 C++ 的 `kcp_mtu_with_fec`）
 pub const MTU_WITH_FEC_DEFAULT: usize = 1405;
 

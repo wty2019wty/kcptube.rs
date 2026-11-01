@@ -10,6 +10,18 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 
+/// 按对端地址族选择本地通配地址（`0.0.0.0:0` 或 `[::]:0`）。
+///
+/// 对应 C++ 中按 `endpoint.address().is_v4()` 选择 `udp::v4()` / `udp::v6()` 的写法。
+/// 客户端握手、端口探测与服务端建立 UDP 目标套接字都使用它。
+pub fn wildcard_addr(peer: SocketAddr) -> SocketAddr {
+    if peer.is_ipv4() {
+        SocketAddr::from(([0, 0, 0, 0], 0))
+    } else {
+        SocketAddr::from(([0u16; 8], 0))
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct UdpBindOptions {
     pub reuse_address: bool,

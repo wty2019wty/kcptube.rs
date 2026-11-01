@@ -5,11 +5,12 @@
 use crate::ClientError;
 use crate::handshake::establish_channel;
 use crate::state::ClientState;
-use crate::util::{allocate_connection_id, is_connection_reset};
+use crate::util::allocate_connection_id;
 use kcptube_protocol::constant::HANDSHAKE_TIMEOUT;
 use kcptube_protocol::packet::{ProtocolType, mux_tell_server_connect_address};
 use kcptube_transport::{
     MuxEvent, MuxSink, MuxTcpSink, MuxTunnel, TcpListenerSession, TcpSession, UdpEndpoint,
+    is_connection_reset,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;

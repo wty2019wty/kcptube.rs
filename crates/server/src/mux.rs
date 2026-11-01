@@ -4,11 +4,10 @@
 
 use crate::ServerError;
 use crate::state::{Destination, SocketState};
-use crate::util::is_connection_reset;
 use kcptube_protocol::packet::{ProtocolType, inform_mux_cancel_packet};
 use kcptube_transport::{
     MuxEvent, MuxRecord, MuxSink, MuxTcpSink, MuxTunnel, TcpSession, UdpEndpoint,
-    resolve_endpoint_filtered,
+    is_connection_reset, resolve_endpoint_filtered, wildcard_addr,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -194,11 +193,7 @@ async fn create_mux_local(
             Ok(record)
         }
         ProtocolType::Udp => {
-            let bind: SocketAddr = if target.address.is_ipv4() {
-                SocketAddr::from(([0, 0, 0, 0], 0))
-            } else {
-                SocketAddr::from(([0u16; 8], 0))
-            };
+            let bind: SocketAddr = wildcard_addr(target.address);
             let socket = Arc::new(UdpEndpoint::bind(bind).await?);
             let record = tunnel.add_record(
                 connection_id,

@@ -5,8 +5,7 @@
 use crate::ClientError;
 use crate::port_hop::spawn_port_hopper;
 use crate::state::ClientState;
-use crate::util::{data_config, handshake_config, wildcard_addr};
-use kcptube_kcp::KcpError;
+use kcptube_kcp::{KcpConfig, KcpError};
 use kcptube_protocol::constant::{HANDSHAKE_TIMEOUT, PACKET_LENGTH};
 use kcptube_protocol::packet::{
     Feature, ProtocolType, SettingsWrapper, request_initialise_packet,
@@ -14,6 +13,7 @@ use kcptube_protocol::packet::{
 };
 use kcptube_transport::{
     KcpChannel, MAX_INNER_MESSAGE, TransportError, UdpEndpoint, now_ms, resolve_endpoints_filtered,
+    wildcard_addr,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -94,24 +94,20 @@ async fn try_establish_channel(
     let handshake = Arc::new(
         KcpChannel::new_with_fec(
             state.codec.clone(),
-            handshake_config(state.settings.kcp_mtu),
+            KcpConfig::handshake(state.settings.kcp_mtu),
             socket.clone(),
             server_peer,
             state.fec,
         )
         .await?,
     );
-    handshake.set_blast(state.settings.blast);
     handshake
-        .set_bandwidth(
+        .apply_handshake_tuning(
+            state.settings.blast,
             state.settings.outbound_bandwidth,
             state.settings.inbound_bandwidth,
         )
         .await;
-    {
-        let mut kcp = handshake.endpoint.kcp.lock().await;
-        kcp.set_rx_minrto(10);
-    }
 
     // 对应 C++ `create_handshake`：仅在 `ignore_listen_address` /
     // `ignore_listen_port` 场景（此时一定来自 `[custom_input*]` 映射）
@@ -158,14 +154,13 @@ async fn try_establish_channel(
             let channel = Arc::new(
                 KcpChannel::new_with_fec(
                     state.codec.clone(),
-                    data_config(&state.settings, conv),
+                    state.settings.kcp_config(conv),
                     socket.clone(),
                     server_peer,
                     state.fec,
                 )
                 .await?,
             );
-            channel.set_blast(state.settings.blast);
             // 对应 C++：客户端出方向带宽受服务端入方向带宽限制
             let outbound = if response.inbound_bandwidth > 0 {
                 state
@@ -176,14 +171,13 @@ async fn try_establish_channel(
                 state.settings.outbound_bandwidth
             };
             channel
-                .set_bandwidth(outbound, state.settings.inbound_bandwidth)
+                .apply_data_tuning(
+                    state.settings.blast,
+                    outbound,
+                    state.settings.inbound_bandwidth,
+                    handshake.rx_srtt().await,
+                )
                 .await;
-            channel.reset_window_values(handshake.rx_srtt().await).await;
-            {
-                let mut kcp = channel.endpoint.kcp.lock().await;
-                kcp.set_rx_minrto(10);
-                kcp.update(now_ms());
-            }
 
             // 端口跳跃：定时探测新目标并切换发送 socket
             spawn_port_hopper(state, &channel);

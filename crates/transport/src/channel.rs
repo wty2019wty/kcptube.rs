@@ -18,6 +18,9 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 
+/// C++ 各 mode 统一使用的最小重传超时（`RxMinRTO = 10` 毫秒）。
+const RX_MIN_RTO: i32 = 10;
+
 /// 一条完整的 KCP 数据通道。
 ///
 /// 发送 socket 可以在运行期切换（端口跳跃），因此内部用共享单元保存；
@@ -192,6 +195,32 @@ impl KcpChannel {
     pub async fn set_bandwidth(&self, outbound: u64, inbound: u64) {
         let mut kcp = self.endpoint.kcp.lock().await;
         kcp.set_bandwidth(outbound, inbound);
+    }
+
+    /// 设置最小重传超时（C++ 各 mode 统一使用 `RxMinRTO = 10`）。
+    pub async fn set_rx_minrto(&self, value: i32) {
+        let mut kcp = self.endpoint.kcp.lock().await;
+        kcp.set_rx_minrto(value);
+    }
+
+    /// 握手通道的统一起始参数（对应 C++ `create_handshake`）：
+    /// `SetBlast` + `SetBandwidth` + `RxMinRTO = 10`。
+    pub async fn apply_handshake_tuning(&self, blast: bool, outbound: u64, inbound: u64) {
+        self.set_blast(blast);
+        let mut kcp = self.endpoint.kcp.lock().await;
+        kcp.set_bandwidth(outbound, inbound);
+        kcp.set_rx_minrto(RX_MIN_RTO);
+    }
+
+    /// 数据通道的统一起始参数：
+    /// 在握手参数之外，再按握手阶段测得的 SRTT 重置收发窗口并驱动一次。
+    pub async fn apply_data_tuning(&self, blast: bool, outbound: u64, inbound: u64, srtt: i32) {
+        self.set_blast(blast);
+        let mut kcp = self.endpoint.kcp.lock().await;
+        kcp.set_bandwidth(outbound, inbound);
+        kcp.reset_window_values(srtt);
+        kcp.set_rx_minrto(RX_MIN_RTO);
+        kcp.update(now_ms());
     }
 
     /// 按握手阶段的 SRTT 重置收发窗口（对应 C++ `ResetWindowValues`）。
@@ -503,6 +532,39 @@ mod tests {
         let kcp = channel.endpoint.kcp.lock().await;
         assert!(kcp.send_window_size() > 32);
         assert!(kcp.receive_window_size() > 32);
+    }
+
+    #[tokio::test]
+    async fn tuning_helpers_configure_bandwidth_and_windows() {
+        let socket = UdpEndpoint::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let channel = KcpChannel::new(
+            Arc::new(PacketCodec::new(EncryptionMode::AesGcm, "pw")),
+            config(2),
+            socket,
+            "127.0.0.1:9".parse().unwrap(),
+        )
+        .await
+        .unwrap();
+
+        // 握手通道：只设带宽与最小重传超时，窗口算法留给数据通道
+        channel
+            .apply_handshake_tuning(true, 1_000_000, 2_000_000)
+            .await;
+        {
+            let kcp = channel.endpoint.kcp.lock().await;
+            assert_eq!(kcp.send_window_size(), 32);
+            assert_eq!(kcp.receive_window_size(), 128);
+        }
+
+        // 数据通道：带宽 + 按 SRTT 重置窗口 + 驱动一次
+        channel
+            .apply_data_tuning(false, 1_000_000, 2_000_000, 100)
+            .await;
+        let kcp = channel.endpoint.kcp.lock().await;
+        assert!(kcp.send_window_size() > 32);
+        assert!(kcp.receive_window_size() > 128);
     }
 
     #[tokio::test]
