@@ -781,15 +781,48 @@ async fn mux_client_queues_until_server_starts() {
     result.expect("服务端后启动时，客户端应保留本地连接并在建链后完成转发");
 }
 
+/// relay 拓扑的测试参数。
+#[derive(Default)]
+struct RelayPairOptions {
+    keep_alive: u16,
+    /// 客户端 mux 隧道数；0 表示非 mux
+    mux_tunnels: u16,
+    /// 两段都启用同一组 FEC 参数
+    fec: Option<(u8, u8)>,
+}
+
 /// 启动「echo + 服务端 + relay + 客户端」四段，客户端连到 relay。
 ///
 /// 拓扑：`client --(A)--> relay --(B)--> server --> echo`，
 /// 两段的加密/KCP 参数故意不同，用来验证 relay 会按段各自解码与重编码。
 async fn start_relay_pair(keep_alive: u16) -> (u16, Vec<JoinHandle<()>>) {
+    start_relay_pair_with_options(RelayPairOptions {
+        keep_alive,
+        ..RelayPairOptions::default()
+    })
+    .await
+}
+
+async fn start_relay_pair_with_options(options: RelayPairOptions) -> (u16, Vec<JoinHandle<()>>) {
+    let RelayPairOptions {
+        keep_alive,
+        mux_tunnels,
+        fec,
+    } = options;
+
     let (echo_port, echo_tasks) = echo_server().await;
     let server_port = allocate_ports(1);
     let relay_port = allocate_ports(1);
     let client_port = allocate_ports(1);
+
+    let fec_line = fec
+        .map(|(original, redundant)| format!("fec={original}:{redundant}\n"))
+        .unwrap_or_default();
+    let mux_line = if mux_tunnels > 0 {
+        format!("mux_tunnels={mux_tunnels}\n")
+    } else {
+        String::new()
+    };
 
     let server_settings = settings(&format!(
         "mode=server\n\
@@ -800,6 +833,7 @@ async fn start_relay_pair(keep_alive: u16) -> (u16, Vec<JoinHandle<()>>) {
          encryption_password=server-password\n\
          encryption_algorithm=AES-OCB\n\
          kcp=regular3\n\
+         {fec_line}\
          keep_alive={keep_alive}\n"
     ));
     // [listener] 面向客户端：AES-GCM + regular3
@@ -812,6 +846,7 @@ async fn start_relay_pair(keep_alive: u16) -> (u16, Vec<JoinHandle<()>>) {
          encryption_password=client-password\n\
          encryption_algorithm=AES-GCM\n\
          kcp=regular3\n\
+         {fec_line}\
          keep_alive={keep_alive}\n\
          [forwarder]\n\
          destination_address=127.0.0.1\n\
@@ -819,6 +854,7 @@ async fn start_relay_pair(keep_alive: u16) -> (u16, Vec<JoinHandle<()>>) {
          encryption_password=server-password\n\
          encryption_algorithm=AES-OCB\n\
          kcp=fast3\n\
+         {fec_line}\
          keep_alive={keep_alive}\n"
     ));
     let client_settings = settings(&format!(
@@ -830,6 +866,8 @@ async fn start_relay_pair(keep_alive: u16) -> (u16, Vec<JoinHandle<()>>) {
          encryption_password=client-password\n\
          encryption_algorithm=AES-GCM\n\
          kcp=regular3\n\
+         {fec_line}\
+         {mux_line}\
          keep_alive={keep_alive}\n"
     ));
 
@@ -982,6 +1020,181 @@ async fn relay_port_hopping_keeps_connection() {
 
     stop(tasks);
     result.expect("relay 端口跳跃期间连接应保持可用");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn relay_mux_tcp_and_udp_roundtrip() {
+    // relay 对 mux 帧完全透明：两条共享隧道上并发 TCP + UDP 应各自独立
+    let (client_port, tasks) = start_relay_pair_with_options(RelayPairOptions {
+        mux_tunnels: 2,
+        ..RelayPairOptions::default()
+    })
+    .await;
+
+    let result = tokio::time::timeout(Duration::from_secs(30), async {
+        let first = tokio::spawn(async move {
+            let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", client_port))
+                .await
+                .unwrap();
+            let (mut reader, mut writer) = stream.split();
+            exchange(&mut reader, &mut writer, "relay mux A", 4).await;
+        });
+        let second = tokio::spawn(async move {
+            let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", client_port))
+                .await
+                .unwrap();
+            let (mut reader, mut writer) = stream.split();
+            exchange(&mut reader, &mut writer, "relay mux B", 4).await;
+            bulk_roundtrip(client_port, 32 * 1024).await;
+        });
+        first.await.unwrap();
+        second.await.unwrap();
+
+        let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        socket.connect(("127.0.0.1", client_port)).await.unwrap();
+        let mut buffer = vec![0u8; 2048];
+        for index in 0..3u8 {
+            let message = format!("relay mux udp #{index}");
+            socket.send(message.as_bytes()).await.unwrap();
+            let size = tokio::time::timeout(Duration::from_secs(5), socket.recv(&mut buffer))
+                .await
+                .expect("应在 5 秒内收到 mux UDP 回显")
+                .unwrap();
+            assert_eq!(&buffer[..size], message.as_bytes());
+        }
+    })
+    .await;
+
+    stop(tasks);
+    result.expect("mux 经 relay 应在 30 秒内完成 TCP/UDP 往返");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn relay_mux_concurrent_tcp() {
+    // 4 条隧道承载 20 条并发 TCP（relay 对 connection_id 透明）
+    let (client_port, tasks) = start_relay_pair_with_options(RelayPairOptions {
+        mux_tunnels: 4,
+        ..RelayPairOptions::default()
+    })
+    .await;
+
+    let result = tokio::time::timeout(Duration::from_secs(45), async {
+        let mut handles = Vec::new();
+        for index in 0..20u32 {
+            handles.push(tokio::spawn(async move {
+                let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", client_port))
+                    .await
+                    .unwrap();
+                let (mut reader, mut writer) = stream.split();
+                exchange(&mut reader, &mut writer, &format!("relay conn {index}"), 2).await;
+            }));
+        }
+        for handle in handles {
+            handle.await.expect("并发连接任务不应 panic");
+        }
+    })
+    .await;
+
+    stop(tasks);
+    result.expect("20 并发 mux TCP 经 relay 应在 45 秒内全部完成");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn relay_fec_roundtrip() {
+    // 两段各自启用 FEC，32 KiB 数据覆盖分片/重组与冗余恢复
+    let (client_port, tasks) = start_relay_pair_with_options(RelayPairOptions {
+        fec: Some((4, 2)),
+        ..RelayPairOptions::default()
+    })
+    .await;
+
+    let result = tokio::time::timeout(Duration::from_secs(30), async {
+        bulk_roundtrip(client_port, 32 * 1024).await;
+    })
+    .await;
+
+    stop(tasks);
+    result.expect("FEC 经 relay 应完成 32 KiB 往返");
+}
+
+/// 客户端 `[custom_input]` + 服务端 `ignore_destination_*`，中间插入 relay。
+///
+/// 目标地址由客户端随 `initialise` 下发（`user_input_ip/port`），relay 必须
+/// 原样透传，服务端才能连到真正的回显端口。
+async fn start_relay_custom_input_pair() -> (u16, Vec<JoinHandle<()>>) {
+    let (echo_port, echo_tasks) = echo_server().await;
+    let server_port = allocate_ports(1);
+    let relay_port = allocate_ports(1);
+    let client_port = allocate_ports(1);
+
+    let server_settings = settings(&format!(
+        "mode=server\n\
+         listen_on=127.0.0.1\n\
+         listen_port={server_port}\n\
+         destination_address={{}}\n\
+         encryption_password=server-password\n\
+         encryption_algorithm=AES-OCB\n\
+         kcp=regular3\n"
+    ));
+    let relay_settings = settings(&format!(
+        "mode=relay\n\
+         [listener]\n\
+         listen_on=127.0.0.1\n\
+         listen_port={relay_port}\n\
+         encryption_password=client-password\n\
+         encryption_algorithm=AES-GCM\n\
+         kcp=regular3\n\
+         [forwarder]\n\
+         destination_address=127.0.0.1\n\
+         destination_port={server_port}\n\
+         encryption_password=server-password\n\
+         encryption_algorithm=AES-OCB\n\
+         kcp=fast3\n"
+    ));
+    let client_settings = settings(&format!(
+        "mode=client\n\
+         listen_port={{}}\n\
+         destination_address=127.0.0.1\n\
+         destination_port={relay_port}\n\
+         encryption_password=client-password\n\
+         encryption_algorithm=AES-GCM\n\
+         kcp=regular3\n\
+         [custom_input]\n\
+         127.0.0.1:{client_port}->127.0.0.1:{echo_port}\n"
+    ));
+
+    let server_task = tokio::spawn(async move {
+        let _ = Server::new(server_settings).run().await;
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let relay_task = tokio::spawn(async move {
+        let _ = Relay::new(relay_settings).run().await;
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let client_task = tokio::spawn(async move {
+        let _ = Client::new(client_settings).run().await;
+    });
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    let mut tasks = vec![server_task, relay_task, client_task];
+    tasks.extend(echo_tasks);
+    (client_port, tasks)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn relay_custom_input_tcp_roundtrip() {
+    let (client_port, tasks) = start_relay_custom_input_pair().await;
+    let result = tokio::time::timeout(Duration::from_secs(20), async {
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", client_port))
+            .await
+            .unwrap();
+        let (mut reader, mut writer) = stream.split();
+        exchange(&mut reader, &mut writer, "relay custom", 3).await;
+    })
+    .await;
+
+    stop(tasks);
+    result.expect("自定义映射经 relay 应完成 TCP 往返");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
