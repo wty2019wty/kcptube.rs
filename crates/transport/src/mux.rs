@@ -18,13 +18,13 @@
 //! 队列，队满时发送方等待，效果等价（本地读变慢即背压）。
 
 use crate::udp::UdpEndpoint;
-use crate::{KcpChannel, MAX_INNER_MESSAGE, TransportError, now_ms, now_secs};
+use crate::{KcpChannel, KeepAlive, MAX_INNER_MESSAGE, TransportError, now_ms, now_secs};
 use kcptube_kcp::KcpError;
 use kcptube_protocol::constant::PACKET_LENGTH;
 use kcptube_protocol::packet::{
-    Feature, PreConnectCustomAddress, ProtocolType, create_keep_alive_packet,
-    create_keep_alive_response_packet, create_mux_data_packet, extract_mux_cancel,
-    extract_mux_data, extract_mux_pre_connect, inform_mux_cancel_packet, unpack_inner,
+    Feature, PreConnectCustomAddress, ProtocolType, create_keep_alive_response_packet,
+    create_mux_data_packet, extract_mux_cancel, extract_mux_data, extract_mux_pre_connect,
+    inform_mux_cancel_packet, unpack_inner,
 };
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -394,7 +394,7 @@ impl MuxTunnel {
         let mut inner = vec![0u8; MAX_INNER_MESSAGE];
         let keep_alive = i64::from(keep_alive);
         let udp_timeout = i64::from(udp_timeout);
-        let mut next_keep_alive = now_secs() + keep_alive;
+        let mut keep_alive = KeepAlive::new(keep_alive, now_secs());
         let mut next_expire = now_secs() + 1;
 
         loop {
@@ -423,12 +423,7 @@ impl MuxTunnel {
                 }
                 _ = ticker.tick() => {
                     let now = now_secs();
-                    if keep_alive > 0 && now >= next_keep_alive {
-                        let packet = create_keep_alive_packet(ProtocolType::Mux);
-                        self.channel.send(&packet).await?;
-                        self.channel.mark_keep_alive_sent(now);
-                        next_keep_alive = now + keep_alive;
-                    }
+                    keep_alive.tick(&self.channel, ProtocolType::Mux, now).await?;
                     if now >= next_expire {
                         next_expire = now + 1;
                         for (protocol, connection_id) in self.expire_idle(udp_timeout) {

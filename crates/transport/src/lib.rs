@@ -17,13 +17,17 @@
 
 pub mod channel;
 pub mod fec;
+pub mod keep_alive;
 pub mod mux;
+pub mod port_hop;
 pub mod tcp;
 pub mod udp;
 
-pub use channel::KcpChannel;
+pub use channel::{KcpChannel, open_handshake_channel};
 pub use fec::{FecReceiver, FecSender};
+pub use keep_alive::KeepAlive;
 pub use mux::{MuxCommand, MuxEvent, MuxRecord, MuxSink, MuxTcpSink, MuxTunnel};
+pub use port_hop::PortHop;
 pub use tcp::{TcpListenerSession, TcpSession};
 pub use udp::{UdpBindOptions, UdpEndpoint, wildcard_addr};
 

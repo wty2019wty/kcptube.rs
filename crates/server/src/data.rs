@@ -7,11 +7,10 @@ use crate::state::{DataSession, HandshakeEntry, SessionKind, SocketState};
 use kcptube_kcp::KcpError;
 use kcptube_protocol::constant::{KCP_CLEANUP_WAITS, TIME_GAP_SECONDS};
 use kcptube_protocol::packet::{
-    Feature, ProtocolType, create_keep_alive_packet, create_keep_alive_response_packet,
-    inform_error_packet, unpack_inner,
+    Feature, ProtocolType, create_keep_alive_response_packet, inform_error_packet, unpack_inner,
 };
 use kcptube_transport::{
-    IncomingFrame, MAX_INNER_MESSAGE, TransportError, UdpEndpoint, now_ms, now_secs,
+    IncomingFrame, KeepAlive, MAX_INNER_MESSAGE, TransportError, UdpEndpoint, now_ms, now_secs,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -205,9 +204,17 @@ impl SocketState {
                 && !matches!(session.kind, SessionKind::Mux { .. })
                 && now >= session.next_keep_alive()
             {
-                let packet = create_keep_alive_packet(protocol);
-                if session.channel.send(&packet).await.is_ok() {
-                    session.channel.mark_keep_alive_sent(now);
+                // 与 C++ 一致：发送失败也推进下次时刻，避免每个 tick 重试
+                if KeepAlive::tick_at(
+                    &session.channel,
+                    protocol,
+                    keep_alive,
+                    session.next_keep_alive(),
+                    now,
+                )
+                .await
+                .is_ok()
+                {
                     let _ = session.channel.update(now_ms()).await;
                 }
                 session.set_next_keep_alive(now + keep_alive);

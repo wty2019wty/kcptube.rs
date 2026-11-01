@@ -199,17 +199,25 @@ relay 会改变流量模型，等形态固定后再测量更可靠。
 
 **验收**：空闲 CPU / 唤醒次数有可量化下降；功能测试与 C++ 互通不回退。
 
-### 阶段 5：relay 移植前置（预估 2–3 天，中风险）
+### 阶段 5：relay 移植前置（部分完成，2026-11-01）
 
 C++ `relay.cpp` 是 client 逻辑的翻版（内部还有 `via_listener` / `via_forwarder` 双份），
 因此先泛化再移植：
 
-- [ ] 端口跳跃（`client/src/port_hop.rs`）参数化：注入目标选择器与角色（client / relay ingress / relay egress）；
-- [ ] 保活与空闲清理抽为可复用任务；
-- [ ] 握手通道建立抽为可复用函数；
+- [x] 端口跳跃：探测与重绑下沉到 `transport::PortHop`（`transport/src/port_hop.rs`）。
+      定时、目标选择与日志仍留在各 mode —— relay ingress 不主动跳跃、egress 按
+      `[forwarder].dport_refresh` 跳跃，共用同一套 `probe()`。
+- [x] 保活：下沉到 `transport::KeepAlive`（`transport/src/keep_alive.rs`）。
+      `KeepAlive::new` 供 `select!` 循环使用，`KeepAlive::tick_at` 供把下次时刻
+      存在 `DataSession` 里的服务端维护任务使用；client TCP/UDP、mux 隧道、服务端会话四处统一。
+- [x] 握手通道建立：`transport::open_handshake_channel`（独占 socket 场景），
+      client 握手与端口探测共用；服务端共享监听 socket 的场景继续用 `KcpChannel::new_with_fec`。
+- [ ] 空闲清理抽出：**本轮未做**。server 与 relay 的回收规则不同（relay 按
+      `loop_find_expires` 的四条规则、并区分两侧保活时间），在没有 relay 实现前抽取
+      容易抽错方向；改为在 relay R2 中随维护任务一起落地并写单元测试。
 - [ ] 再实现 relay，按方向参数化，不复制第三份。
 
-**验收**：relay 实现本身不再包含与 client 重复的状态机。
+**验收**：relay 实现本身不再包含与 client 重复的状态机（relay 落地后复核）。
 
 ## 6. 风险与回滚
 
@@ -229,7 +237,7 @@ C++ `relay.cpp` 是 client 逻辑的翻版（内部还有 `via_listener` / `via_
 | 2 结构性去重 | 待开始 | |
 | 3 死代码清理 | 待开始 | |
 | 4 性能优化 | 待开始 | 依赖 D1 |
-| 5 relay 前置 | 待开始 | 依赖阶段 1–2（阶段 1 已就绪） |
+| 5 relay 前置 | 🟡 3/4 已完成（2026-11-01） | 端口跳跃、保活、握手通道已下沉；空闲清理随 relay R2 落地 |
 
 ## 8. 变更记录
 
@@ -237,3 +245,4 @@ C++ `relay.cpp` 是 client 逻辑的翻版（内部还有 `via_listener` / `via_
 |---|---|
 | 2026-11-01 | 建立本文档：记录跨模块重复审计、与 C++ 原版对照、分阶段优化路线与决策 D1–D5；补充 5.0 实施顺序（先完成 M5/M6，阶段 1/5 作为 relay 前置，阶段 4 后置） |
 | 2026-11-01 | 完成阶段 1 公共层收口：`is_connection_reset` / `wildcard_addr` / `KcpChannel::{set_rx_minrto, apply_handshake_tuning, apply_data_tuning}` 下沉到 transport；`UserSettings::{kcp_config, fec_parameters}` 与 `KcpConfig::handshake` 下沉到 config/kcp；`log_warning` / `StatusSummary` + `print_status_summary` 下沉到 logging；删除 client/server 两份 `util.rs` 重复函数，5 处通道初始化改为调用助手；测试 106 → 115 |
+| 2026-11-01 | 完成阶段 5 的前三项（relay 前置）：新增 `transport::PortHop`（端口探测与重绑 IO，client 只留定时/选目标/日志）、`transport::KeepAlive`（client TCP/UDP、mux、服务端四处保活统一）、`transport::open_handshake_channel`（client 握手与端口探测共用）；空闲清理因 relay 判定规则不同，留到 relay R2；测试 115 → 118 |

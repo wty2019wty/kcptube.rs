@@ -5,15 +5,15 @@
 use crate::ClientError;
 use crate::port_hop::spawn_port_hopper;
 use crate::state::ClientState;
-use kcptube_kcp::{KcpConfig, KcpError};
+use kcptube_kcp::KcpError;
 use kcptube_protocol::constant::{HANDSHAKE_TIMEOUT, PACKET_LENGTH};
 use kcptube_protocol::packet::{
     Feature, ProtocolType, SettingsWrapper, request_initialise_packet,
     request_initialise_packet_with_address, unpack_inner,
 };
 use kcptube_transport::{
-    KcpChannel, MAX_INNER_MESSAGE, TransportError, UdpEndpoint, now_ms, resolve_endpoints_filtered,
-    wildcard_addr,
+    KcpChannel, MAX_INNER_MESSAGE, TransportError, UdpEndpoint, now_ms, open_handshake_channel,
+    resolve_endpoints_filtered,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -83,24 +83,22 @@ async fn try_establish_channel(
     server_peer: SocketAddr,
     timeout: Duration,
 ) -> Result<Option<(u32, Arc<KcpChannel>)>, ClientError> {
-    let socket = match UdpEndpoint::bind(wildcard_addr(server_peer)).await {
-        Ok(socket) => socket,
+    // 独占本地 socket 的握手通道：绑定失败按「本次尝试失败」处理，
+    // 交给上层换地址/换端口重试。
+    let (handshake, socket) = match open_handshake_channel(
+        state.codec.clone(),
+        state.settings.kcp_mtu,
+        server_peer,
+        state.fec,
+    )
+    .await
+    {
+        Ok((channel, socket)) => (Arc::new(channel), socket),
         Err(error) => {
             state.log_message(&format!("无法创建本地 UDP 套接字：{error}"));
             return Ok(None);
         }
     };
-
-    let handshake = Arc::new(
-        KcpChannel::new_with_fec(
-            state.codec.clone(),
-            KcpConfig::handshake(state.settings.kcp_mtu),
-            socket.clone(),
-            server_peer,
-            state.fec,
-        )
-        .await?,
-    );
     handshake
         .apply_handshake_tuning(
             state.settings.blast,

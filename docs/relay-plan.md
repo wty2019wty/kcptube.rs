@@ -151,6 +151,9 @@ R1–R4 只保留接口位，不实现行为。
 | 能力 | 位置 | 说明 |
 |---|---|---|
 | KCP + 加解密 + FEC + 换 socket/对端 | `crates/transport/src/channel.rs` | 两侧各一个 `Arc<KcpChannel>` 即可 |
+| 握手通道建立（独占 socket） | `transport::open_handshake_channel` | egress 侧握手 |
+| 保活发送 | `transport::KeepAlive`（`new` / `tick_at`） | 两侧独立保活 |
+| 端口探测与重绑 | `transport::PortHop` | R3 的 egress 跳跃 |
 | 帧解析与时间窗 | `transport::PacketCodec::{open_frame, seal}`、`parse_frame`、`IncomingFrame::conv()` | 与 `server/src/socket.rs` 同一套 demux 写法 |
 | 目标解析 | `transport::resolve_endpoints_filtered` | 支持 IP 字面量与域名、地址族过滤 |
 | 配置映射 | `config::UserSettings`（阶段 1 会补 `kcp_config` / `fec_parameters`） | 两侧 KCP 参数直接来自分段 |
@@ -356,7 +359,8 @@ async fn drain_and_forward(from: &KcpChannel, to: &KcpChannel, session: &RelaySe
 
 | 步骤 | 内容 | 预估 | 验收 |
 |---|---|---|---|
-| **R0** | 阶段 1 公共层（`kcp_config` / `fec_parameters` / `set_rx_minrto` / `apply_*_tuning` / `wildcard_addr` / `log_warning` / 状态摘要格式化） | 1–2 天 | 见 `refactor-backlog.md` 阶段 1 |
+| **R0** | 阶段 1 公共层（`kcp_config` / `fec_parameters` / `set_rx_minrto` / `apply_*_tuning` / `wildcard_addr` / `log_warning` / 状态摘要格式化） | ✅ 已完成 | 见 `refactor-backlog.md` 阶段 1 |
+| **R0.5** | 阶段 5 前置（`PortHop` / `KeepAlive` / `open_handshake_channel`） | ✅ 已完成 | 见 `refactor-backlog.md` 阶段 5；空闲清理随 R2 |
 | **R1** | relay 骨架：`Relay::new(root, ingress, egress)`、监听绑定、单 listener demux、握手中继、数据会话、双向转发、控制帧 | 2–3 天 | Rust client → relay → Rust server 的 TCP/UDP echo 通过 |
 | **R2** | 生命周期：握手/forwarder/会话清理、保活、状态日志、错误日志 | 1–2 天 | 空闲回收、`keep_alive` 用例通过 |
 | **R3** | 端口跳跃（relay 侧）+ 与客户端跳跃的联动 | 1–2 天 | 小 `dport_refresh` 下长连接不断 |
@@ -431,3 +435,4 @@ Failure: NONE
 | 日期 | 内容 |
 |---|---|
 | 2026-11-01 | 建立本文档：C++ relay 行为拆解、Rust 复用面与缺口、目标设计与 R0–R5 分步实施、测试计划与待确认项 |
+| 2026-11-01 | R0 与 R0.5 完成：`transport` 新增 `PortHop` / `KeepAlive` / `open_handshake_channel`，§3.1 复用面同步更新；空闲清理留到 R2 |

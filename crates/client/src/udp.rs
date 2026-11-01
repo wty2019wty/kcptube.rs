@@ -8,12 +8,12 @@ use crate::state::ClientState;
 use kcptube_kcp::KcpError;
 use kcptube_protocol::constant::{KCP_CLEANUP_WAITS, PACKET_LENGTH};
 use kcptube_protocol::packet::{
-    Feature, ProtocolType, create_data_packet, create_keep_alive_packet,
-    create_keep_alive_response_packet, inform_disconnect_packet, unpack_inner,
+    Feature, ProtocolType, create_data_packet, create_keep_alive_response_packet,
+    inform_disconnect_packet, unpack_inner,
 };
 use kcptube_transport::{
-    KcpChannel, MAX_INNER_MESSAGE, TransportError, UdpEndpoint, is_connection_reset, now_ms,
-    now_secs,
+    KcpChannel, KeepAlive, MAX_INNER_MESSAGE, TransportError, UdpEndpoint, is_connection_reset,
+    now_ms, now_secs,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -105,8 +105,7 @@ async fn udp_relay_loop(
     let mut datagram = vec![0u8; PACKET_LENGTH + 256];
     let mut inner_buffer = vec![0u8; MAX_INNER_MESSAGE];
 
-    let keep_alive = i64::from(state.settings.keep_alive);
-    let mut next_keep_alive = now_secs() + keep_alive;
+    let mut keep_alive = KeepAlive::new(i64::from(state.settings.keep_alive), now_secs());
     let udp_timeout = i64::from(state.settings.udp_timeout);
     let mut last_local = now_secs();
     let mut last_remote = now_secs();
@@ -137,12 +136,7 @@ async fn udp_relay_loop(
             }
             _ = ticker.tick() => {
                 let now = now_secs();
-                if keep_alive > 0 && now >= next_keep_alive {
-                    let packet = create_keep_alive_packet(ProtocolType::Udp);
-                    channel.send(&packet).await?;
-                    channel.mark_keep_alive_sent(now);
-                    next_keep_alive = now + keep_alive;
-                }
+                keep_alive.tick(&channel, ProtocolType::Udp, now).await?;
                 channel.update(now_ms()).await?;
 
                 if now - last_local > udp_timeout && now - last_remote > udp_timeout {

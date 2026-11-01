@@ -21,6 +21,29 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 /// C++ 各 mode 统一使用的最小重传超时（`RxMinRTO = 10` 毫秒）。
 const RX_MIN_RTO: i32 = 10;
 
+/// 建立一条面向 `peer` 的**独占 socket** 握手通道（对应 C++ `create_handshake`）。
+///
+/// 按对端地址族绑定本地通配端口，使用固定握手参数；调用方随后应执行
+/// [`KcpChannel::apply_handshake_tuning`]。服务端共享监听 socket 的场景不适用，
+/// 那种情况直接用 [`KcpChannel::new_with_fec`]。
+pub async fn open_handshake_channel(
+    codec: Arc<PacketCodec>,
+    kcp_mtu: i32,
+    peer: SocketAddr,
+    fec: Option<(u8, u8)>,
+) -> Result<(KcpChannel, UdpEndpoint), TransportError> {
+    let socket = UdpEndpoint::bind(crate::udp::wildcard_addr(peer)).await?;
+    let channel = KcpChannel::new_with_fec(
+        codec,
+        KcpConfig::handshake(kcp_mtu),
+        socket.clone(),
+        peer,
+        fec,
+    )
+    .await?;
+    Ok((channel, socket))
+}
+
 /// 一条完整的 KCP 数据通道。
 ///
 /// 发送 socket 可以在运行期切换（端口跳跃），因此内部用共享单元保存；
@@ -532,6 +555,22 @@ mod tests {
         let kcp = channel.endpoint.kcp.lock().await;
         assert!(kcp.send_window_size() > 32);
         assert!(kcp.receive_window_size() > 32);
+    }
+
+    #[tokio::test]
+    async fn handshake_channel_binds_peer_family() {
+        let peer: SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let (channel, socket) = open_handshake_channel(
+            Arc::new(PacketCodec::new(EncryptionMode::None, "")),
+            1418,
+            peer,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(socket.local_addr().unwrap().is_ipv4());
+        assert_eq!(channel.peer(), peer);
+        assert_eq!(channel.local_addr().unwrap(), socket.local_addr().unwrap());
     }
 
     #[tokio::test]
