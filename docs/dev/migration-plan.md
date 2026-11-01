@@ -1,6 +1,6 @@
 # kcptube Rust 移植计划
 
-> 状态：v2（2026-11-01 按代码现状校准；M0–M4 已完成，M5 进行中）
+> 状态：v2（2026-11-01 按代码现状校准；M0–M5 已完成，M6 未开始；FreeBSD `SO_SETFIB` 顺延至 M10）
 > 适用分支：`rs-dev`
 > 参考实现：`legacy-cpp/`（C++ 版，`app_version = 20260329`）
 
@@ -25,7 +25,7 @@
 
 - 新协议、新加密算法、新配置语法
 - 图形界面、Web 面板
-- macOS 官方支持（可编译但不保证，见 M5）
+- macOS 官方支持（可编译但不保证，见 M10）
 - 以性能为唯一目标的重构（先对齐，再优化）
 
 ### 1.4 成功标准
@@ -301,7 +301,7 @@ KCP 本体（ikcp）是标准大端格式。
 - [x] **kcp**：与 C++ 版做「同一输入序列 → 同一输出包序列」测试
 - [x] **transport**：`KcpUpdater`（最小堆，语义对齐 C++ 线程版）
 - [x] **transport**：TCP 会话封装（读、写、背压、`into_split`）
-- [x] **transport**：UDP 监听/发送封装（`socket2`、`SO_REUSEADDR`、双栈；`SO_SETFIB` 留到 M5）
+- [x] **transport**：UDP 监听/发送封装（`socket2`、`SO_REUSEADDR`、双栈；`SO_SETFIB` 留到 M10）
 - [x] **transport**：数据包发送/接收流水线（加密 → 包层 → KCP → UDP，见 `KcpChannel`）
 - [x] 测试：回环（loopback）下 10% 丢包仍能完整传输
 
@@ -363,13 +363,12 @@ KCP 本体（ikcp）是标准大端格式。
 
 ---
 
-### M5 relay / tester / 跨平台 / 性能（进行中：仅剩 FreeBSD `SO_SETFIB`）
+### M5 relay / tester / 跨平台 / 性能（已完成）
 
 任务：
 
 - [x] **relay**：`[listener]` / `[forwarder]` 双段配置与转发（2026-11-01 完成，含空闲回收、两侧保活、egress 端口跳跃，已过 T4/T10 人工验收）
 - [x] **tester**：`--try` 连通性测试（延时、丢包统计与输出格式，2026-11-01 完成）
-- [ ] **平台**：FreeBSD `SO_SETFIB`
 - [x] **平台**：Linux 构建（CI `ubuntu-latest` 已覆盖构建与测试）
 - [x] **平台**：静态链接（`scripts/build-release.ps1`；CI 用 `musl-tools` 原生构建，Windows 本地用 zigbuild）
 - [x] **性能**：基准测试（吞吐、P99 延迟、内存），与 C++ 版对比（2026-11-01 完成，方法与结果见 [`benchmark.md`](benchmark.md)）
@@ -401,6 +400,16 @@ KCP 本体（ikcp）是标准大端格式。
 - STUN 成功获取公网地址并写入回调脚本
 - 公网 IP 变化时 `update_ipv4` / `update_ipv6` 被正确触发
 - `ip_address.log` 内容格式与 C++ 一致
+
+---
+
+### M10 远期平台项（未排期）
+
+平台专属能力，依赖对应操作系统与真机环境，暂不排期；集中记录在这里，避免散落在其他里程碑。
+
+- [ ] **FreeBSD `SO_SETFIB`**：`fib_ingress` / `fib_egress` 绑定到指定路由表
+      （当前两个参数可解析、可校验，但运行时不生效）
+- [ ] **macOS 官方支持**：目前可编译但不保证；若要正式支持，需补 CI 矩阵与文档
 
 ---
 

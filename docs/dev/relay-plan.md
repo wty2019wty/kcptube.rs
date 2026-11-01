@@ -355,7 +355,7 @@ async fn drain_and_forward(from: &KcpChannel, to: &KcpChannel, session: &RelaySe
 - `crates/kcptube/src/main.rs:148` 改为把根 `settings` 一并传入。
 - `config` 已校验：relay 必须有 `[listener]` + `[forwarder]`，`mux_tunnels` 不得设置。
 - relay 只监听 UDP；`listen_port` 缺省校验已由 `verify_server_listen_port`（`RelayIngress`）覆盖。
-- `fib_ingress` / `fib_egress`：M5 的 FreeBSD 平台项未完成前只记录日志，不做绑定。
+- `fib_ingress` / `fib_egress`：M10 的 FreeBSD 平台项未完成前只记录日志，不做绑定。
 
 ## 5. 与 C++ 的对齐清单
 

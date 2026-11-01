@@ -49,7 +49,7 @@
 | fib_ingress  | 0 - 65535 |否|入站连接使用的 FIB|
 | fib_egress | 0 - 65535 |否|出站连接使用的 FIB|
 
-**注意**：Rust 版当前可以解析这两个参数，但尚未应用到实际连接（SO_SETFIB）。
+**注意**：Rust 版当前可以解析这两个参数，但尚未应用到实际连接（SO_SETFIB，计划 M10）。
 
 ## outbound_bandwidth 与 inbound_bandwidth
 可用后缀：K / k / M / m / G / g

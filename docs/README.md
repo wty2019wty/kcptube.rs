@@ -19,7 +19,7 @@
 | 中继模式（`mode=relay`） | 🟢 可用（两段式握手改写、双向转发、保活、状态日志、端口跳跃） |
 | 自定义映射（`[custom_input*]`） | 🟢 可用（含 `ignore_listen_*` / `ignore_destination_*` 与 mux 预连接） |
 | STUN / DDNS（`stun_server`、`update_ipv4`、`update_ipv6`、`destination_dnstxt`） | 🟡 尚未实现（参数可解析、可校验） |
-| FreeBSD 策略路由（`fib_ingress` / `fib_egress`） | 🟡 尚未实现（参数可解析） |
+| FreeBSD 策略路由（`fib_ingress` / `fib_egress`） | 🟡 尚未实现（参数可解析；计划 M10） |
 
 ## 模式介绍
 

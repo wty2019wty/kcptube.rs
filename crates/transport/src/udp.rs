@@ -3,7 +3,7 @@
 //! UDP 套接字封装（对应 C++ `udp_server` / `udp_client` 的句柄部分）。
 //!
 //! 使用 `socket2` 处理 `SO_REUSEADDR`、IPv6 双栈等选项，再交给 tokio 做异步收发。
-//! `SO_SETFIB` 属于 FreeBSD 专有选项，等 M5 平台适配时再补。
+//! `SO_SETFIB` 属于 FreeBSD 专有选项，等 M10 平台项再补。
 
 use socket2::{Domain, Protocol, Socket, Type};
 use std::net::SocketAddr;

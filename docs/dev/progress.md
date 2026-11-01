@@ -14,7 +14,7 @@
 | Rust 代码 | 14,218 行（56 个源文件，非空行，含 `#[cfg(test)]` 模块） |
 | crate 数 | 12（11 个 lib + 1 个 bin） |
 | 单元/集成测试 | 150 个，全部通过 |
-| 整体完成度 | **M0~M4 完成，M5 进行中** |
+| 整体完成度 | **M0~M5 完成，M6 未开始**（FreeBSD `SO_SETFIB` 顺延至 M10） |
 
 ```
 M0 基线            ██████████ 100%
@@ -22,8 +22,9 @@ M1 协议基础层      ██████████ 100%
 M2 KCP/传输        ██████████ 100%
 M3 TCP 最小互通     ██████████ 100%
 M4 完整模式         ██████████ 100%
-M5 relay/跨平台     █████████▉  99%   ← 仅剩 FreeBSD SO_SETFIB；relay、--try、性能、发布完成
+M5 relay/跨平台     ██████████ 100%   ← relay、--try、性能、发布完成
 M6 STUN/DDNS       ░░░░░░░░░░   0%
+M10 远期平台        ░░░░░░░░░░  --    ← FreeBSD SO_SETFIB、macOS（未排期）
 ```
 
 ---
@@ -120,7 +121,7 @@ Rust 输出完全一致，见 `crates/fec/src/lib.rs::vectors_match_botan_zfec`�
 > 已知差异：C++ 的重传顺序依赖 `std::unordered_map` 迭代顺序（不可移植），
 > Rust 版固定按 SN 升序发送；报文内容与集合完全一致，仅同一次 flush 内的顺序不同。
 >
-> `SO_SETFIB` 是 FreeBSD 专有选项，随 M5 平台适配补充。
+> `SO_SETFIB` 是 FreeBSD 专有选项，随 M10 平台项补充。
 
 ### 3.6 TCP 最小互通（M3，已完成）
 
@@ -326,7 +327,7 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 | 3.2 | 客户端状态日志的 `KCP#<conv>` 用服务端分配的 conv | 与 C++ 一致 | — |
 | 3.3 | mux 背压用有界队列替代 C++ 的 `pause()` | 行为等价（读变慢即背压） | 保持现状 |
 | 4 | 协议无版本字段，锁定 `20260329` | 上游升级需同步 | 每次上游发版做 diff 并记录 |
-| 5 | `SO_SETFIB`（FreeBSD）未实现 | FreeBSD 多路由表不可用 | M5 |
+| 5 | `SO_SETFIB`（FreeBSD）未实现 | FreeBSD 多路由表不可用 | M10（远期） |
 | 6 | `dashmap` 在 workspace 依赖中声明但未被任何 crate 使用 | 依赖膨胀 | 移除或接入 |
 | 7 | ~~`ignore_destination_*` / `[custom_input*]` 映射转发未接入；mux `pre_connect_custom_address` 发送侧待补~~ | 已修复：客户端按映射监听并随握手包下发目标，mux 模式发送 `pre_connect_custom_address`；服务端 `ignore_destination_*` 生效 | 已关闭 |
 | 8 | STUN / DDNS 未实现（已从 M4 移入 M6） | 公网地址探测与动态 DNS 不可用 | M6 |
@@ -359,7 +360,7 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 17. [x] 多配置文件并发启动（已知问题 #13，2026-11-01 完成）
 18. [x] M5 之性能基准：新增 `scripts/bench.py` + `scripts/bench-m5.ps1`，结果见 [`benchmark.md`](benchmark.md)（2026-11-01 完成；Rust↔Rust 吞吐约 3.3–4.9× C++ 基线，互操作方向约 1.2× / 2.0×，延迟不劣化）
 19. [x] M5 之发布工程化：`scripts/build-release.ps1`、`.github/workflows/release.yml`（tag 触发）、[`release.md`](release.md)（2026-11-01 完成；CI 用原生 musl，不需要 zig）
-20. [ ] M5 之 FreeBSD `SO_SETFIB`
+20. [ ] M10（远期）：FreeBSD `SO_SETFIB`（`fib_ingress` / `fib_egress`）
 21. [ ] M6：STUN、DDNS、`ip_address.log`
 
 完成标准：M4 验收表中的 UDP、mux、端口跳跃、自定义映射全部可用；STUN/DDNS 转入 M6。
@@ -412,6 +413,7 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 | 2026-11-01 | **fix（已知问题 #13）**：`main` 改为用 `tokio::task::JoinSet` **并发**运行全部配置文件，对齐 C++ 在同一 `io_context` 上同时启动 client/server/relay；此前逐个 `await` 会让首个常驻配置独占进程、后续配置永不启动。新增 `crates/kcptube/tests/multi_profile.rs`（启动真实二进制、两个 `mode=server` 配置、断言两个 UDP 端口都监听），`docs/README.md` 与 `docs/client-server.md` 的多配置说明同步改为并发；测试增至 150，`fmt` / `clippy -D warnings` / `test --workspace` 全绿 |
 | 2026-11-01 | **M5 性能基准**：新增 `scripts/bench.py`（吞吐 / 延迟测量客户端）与 `scripts/bench-m5.ps1`（四场景编排：`rust-rust` / `cpp-cpp` / `rust-client-cpp-server` / `cpp-client-rust-server`），新增 [`benchmark.md`](benchmark.md)。本机（Ryzen 9 7845HX / Windows 10 / Release）结果：`rust-rust` 21–31 MiB/s、`cpp-cpp` 6.3–6.5、`rust-client-cpp-server` 7.7–7.8、`cpp-client-rust-server` 13.0–13.3；P99 0.13–0.24 ms，与 C++ 相当；两进程工作集 Rust 11.5 MB vs C++ 23.1 MB。M5 性能验收（≥ C++ 80%、延迟不劣化）通过，阶段 4 的优化项暂不排期 |
 | 2026-11-01 | **M5 发布工程化**：新增 `scripts/build-release.ps1`（Windows 静态 CRT zip + Linux musl tar.gz + `SHA256SUMS.txt`；Windows 本地用 zigbuild，Linux 主机/CI 用原生 musl target）、`.github/workflows/release.yml`（`v*` tag 触发；ubuntu 用 `musl-tools` 原生构建、windows 用 msvc；创建 GitHub Release）、[`release.md`](release.md)；本地验证两平台产物构建成功、Windows 产物可运行、包内容与校验和正确 |
+| 2026-11-01 | docs: M5 标记完成；FreeBSD `SO_SETFIB` 从 M5 顺延到新增的 M10「远期平台项」（未排期），`migration-plan.md`、`progress.md` 的总览、已知问题 #5、下一步与相关注释同步；`relay-plan.md`、`docs/parameters.md`、`docs/README.md` 的平台说明改为指向 M10 |
 
 ---
 
