@@ -8,43 +8,131 @@ on:
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   build:
-    name: build (${{ matrix.target }})
+    name: build (${{ matrix.platform }}-${{ matrix.arch }})
     strategy:
       fail-fast: false
       matrix:
         include:
+          # ---- Linux：musl 静态链接，x86 / x64 / arm / aarch64 ----
           - os: ubuntu-latest
-            target: linux
+            platform: linux
+            arch: x86
+            target: i686-unknown-linux-musl
+            tool: cross
+            exe: kcptube
+          - os: ubuntu-latest
+            platform: linux
+            arch: x64
+            target: x86_64-unknown-linux-musl
+            tool: cross
+            exe: kcptube
+          - os: ubuntu-latest
+            platform: linux
+            arch: arm
+            target: armv7-unknown-linux-musleabihf
+            tool: cross
+            exe: kcptube
+          - os: ubuntu-latest
+            platform: linux
+            arch: aarch64
+            target: aarch64-unknown-linux-musl
+            tool: cross
+            exe: kcptube
+          # ---- Windows：msvc 静态 CRT，x86 / x64 ----
           - os: windows-latest
-            target: windows
+            platform: windows
+            arch: x86
+            target: i686-pc-windows-msvc
+            tool: native
+            exe: kcptube.exe
+          - os: windows-latest
+            platform: windows
+            arch: x64
+            target: x86_64-pc-windows-msvc
+            tool: native
+            exe: kcptube.exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
 
-      # Linux 用原生 musl 工具链构建静态产物，不需要 zig。
-      - name: 安装 musl 工具链
-        if: matrix.target == 'linux'
+      # Linux 非本地架构（x86/arm/aarch64）用 cross（Docker + 交叉工具链）构建；
+      # x64 也走 cross，保证 4 个 Linux 目标只有一条构建路径。
+      - name: 安装 cross
+        if: matrix.tool == 'cross'
+        uses: taiki-e/install-action@cross
+
+      - name: 读取版本号
+        id: version
+        shell: pwsh
         run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools
-          rustup target add x86_64-unknown-linux-musl
+          $match = [regex]::Match(
+              (Get-Content -Raw Cargo.toml),
+              '(?ms)^\[workspace\.package\].*?^\s*version\s*=\s*"([^"]+)"'
+          )
+          if (-not $match.Success) {
+              throw "无法从 Cargo.toml 的 [workspace.package] 读取版本号"
+          }
+          "version=$($match.Groups[1].Value)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
-      - name: 构建并打包
+      - name: 构建（Linux musl 静态）
+        if: matrix.tool == 'cross'
+        run: cross build --release -p kcptube --target ${{ matrix.target }}
+
+      - name: 构建（Windows 静态 CRT）
+        if: matrix.tool == 'native'
         shell: pwsh
         env:
-          CC_x86_64_unknown_linux_musl: musl-gcc
-        run: ./scripts/build-release.ps1 -Targets ${{ matrix.target }}
+          # 静态 CRT：发布包不依赖 VC++ 运行时（x86 / x64 均适用）。
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo build --release -p kcptube --target ${{ matrix.target }}
+
+      - name: 打包
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = "${{ steps.version.outputs.version }}"
+          $stage = "build/release/${{ matrix.platform }}-${{ matrix.arch }}"
+          if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
+          New-Item -ItemType Directory -Force $stage | Out-Null
+
+          $exe = "target/${{ matrix.target }}/release/${{ matrix.exe }}"
+          if (-not (Test-Path $exe)) { throw "未找到 $exe" }
+          Copy-Item $exe (Join-Path $stage "${{ matrix.exe }}")
+          foreach ($file in @("README.md", "LICENSE", "THIRD-PARTY.md")) {
+              Copy-Item $file $stage
+          }
+          # 发布包只带面向使用者的文档，不带 docs/dev。
+          $docs = Join-Path $stage "docs"
+          New-Item -ItemType Directory -Force $docs | Out-Null
+          Copy-Item (Join-Path "docs" "*.md") $docs
+          Copy-Item "service" (Join-Path $stage "service") -Recurse
+
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $base = "dist/kcptube-$version-${{ matrix.platform }}-${{ matrix.arch }}"
+          if ("${{ matrix.platform }}" -eq "windows") {
+              Compress-Archive -Path (Join-Path $stage "*") -DestinationPath "${base}.zip" -Force
+          } else {
+              tar -czf "${base}.tar.gz" -C $stage .
+              if ($LASTEXITCODE -ne 0) { throw "打包 ${base}.tar.gz 失败" }
+          }
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
-          name: kcptube-${{ matrix.target }}
+          name: kcptube-${{ matrix.platform }}-${{ matrix.arch }}
           path: |
             dist/kcptube-*.zip
             dist/kcptube-*.tar.gz

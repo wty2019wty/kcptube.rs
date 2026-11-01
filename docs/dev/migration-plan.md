@@ -370,7 +370,7 @@ KCP 本体（ikcp）是标准大端格式。
 - [x] **relay**：`[listener]` / `[forwarder]` 双段配置与转发（2026-11-01 完成，含空闲回收、两侧保活、egress 端口跳跃，已过 T4/T10 人工验收）
 - [x] **tester**：`--try` 连通性测试（延时、丢包统计与输出格式，2026-11-01 完成）
 - [x] **平台**：Linux 构建（CI `ubuntu-latest` 已覆盖构建与测试）
-- [x] **平台**：静态链接（`scripts/build-release.ps1`；CI 用 `musl-tools` 原生构建，Windows 本地用 zigbuild）
+- [x] **平台**：静态链接（CI 用 `cross` 构建 4 个 Linux musl 目标；本地脚本用 zigbuild，仅覆盖 x64；见 [`release.md`](release.md)）
 - [x] **性能**：基准测试（吞吐、P99 延迟、内存），与 C++ 版对比（2026-11-01 完成，方法与结果见 [`benchmark.md`](benchmark.md)）
 - [ ] **性能**：必要优化（零拷贝、批量收发、`SO_REUSEPORT`）——基准已达标（Rust↔Rust 吞吐约为 C++ 基线 3.3–4.9 倍），暂不排期
 - [x] **发布**：交叉编译脚本与 GitHub Release（2026-11-01 完成，见 [`release.md`](release.md)）

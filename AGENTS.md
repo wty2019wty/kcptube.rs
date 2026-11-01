@@ -16,7 +16,7 @@ cargo test -p kcptube-crypto vectors                # 单个测试（名称过�
 cargo test -p kcptube-server --test interop client_server_tcp_roundtrip   # 单个 interop 用例
 ```
 
-提交前按顺序执行（CI 使用相同命令，`ubuntu` + `windows` 矩阵）：
+提交前按顺序执行（CI 使用相同命令，`ubuntu` + `windows` 原生矩阵；其余发布目标只做交叉编译检查）：
 
 ```bash
 cargo fmt --all -- --check
@@ -28,8 +28,10 @@ cargo test --workspace
 - `--check-config` **永远返回 0**，配置是否合法只看输出行 `Error Found in Configuration File(s): Yes/No`；不要用退出码判断。
 - 端到端测试在 `crates/server/tests/interop.rs`，会占用 `127.0.0.1` 的 10000–20000 真实端口并起后台任务；
   用例失败先怀疑端口被占用或启动时序，不要放宽断言或超时。
-- 静态发布：`cargo zigbuild --release --target x86_64-unknown-linux-musl`（依赖 cargo-zigbuild，
-  Windows 上 Zig 路径用 `CARGO_ZIGBUILD_ZIG_PATH` 指定）。
+- 静态发布：本地可用 `cargo zigbuild --release --target x86_64-unknown-linux-musl`（依赖 cargo-zigbuild，
+  Windows 上 Zig 路径用 `CARGO_ZIGBUILD_ZIG_PATH` 指定）；CI 用 `cross` 构建 4 个 Linux musl 目标
+  （x86 / x64 / arm / aarch64）与 2 个 Windows msvc 目标（x86 / x64），构建与打包逻辑内联在
+  `.github/workflows/release.yml`，不依赖 `scripts/build-release.ps1`（该脚本仅供本地手动打包）。
 
 ## 目录与边界
 

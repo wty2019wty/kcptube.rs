@@ -62,7 +62,7 @@ M10 远期平台        ░░░░░░░░░░  --    ← FreeBSD SO_SET
 - [x] 10 个 crate 的目录、`Cargo.toml`、模块划分
 - [x] 共享依赖清单（`[workspace.dependencies]`）
 - [x] `.gitignore` 增加 `target/`
-- [x] CI：fmt / clippy（`-D warnings`）/ test，ubuntu + windows 矩阵
+- [x] CI：fmt / clippy（`-D warnings`）/ test，ubuntu + windows 原生矩阵（另有 Linux x86/arm/aarch64 与 Windows x86 的交叉编译检查）
 - [x] 新 `README.md`（Rust 版说明），原文档在 `legacy-cpp/`
 
 ### 3.3 协议基础层（M1）
@@ -269,14 +269,18 @@ Rust 输出完全一致，见 `crates/fec/src/lib.rs::vectors_match_botan_zfec`�
 
 ### 3.13 发布工程化（M5，已完成）
 
-- [x] `scripts/build-release.ps1`：一次构建 Windows（静态 CRT）与 Linux musl（Windows 本地用
-      zigbuild，Linux 主机/CI 用原生 `--target x86_64-unknown-linux-musl`），输出
+- [x] `scripts/build-release.ps1`（本地手动打包，CI 不调用）：构建 Windows x64（静态 CRT）与
+      Linux x64 musl（Windows 本地用 zigbuild，Linux 主机用原生
+      `--target x86_64-unknown-linux-musl`），输出
       `dist/kcptube-<版本>-{windows-x64.zip,linux-x64.tar.gz}` 与 `SHA256SUMS.txt`
 - [x] 发布包内容固定为可执行文件 + `README.md` / `LICENSE` / `THIRD-PARTY.md` +
       `docs/*.md`（使用文档）+ `service/`（示例配置与 systemd unit），不含 `docs/dev/`
-- [x] `.github/workflows/release.yml`：推送 `v*` tag 触发；`ubuntu-latest` 用
-      `musl-tools` + musl target 原生构建（**不依赖 zig**），`windows-latest` 用 msvc；
+- [x] `.github/workflows/release.yml`：推送 `v*` tag 触发，**构建与打包内联在工作流中**
+      （不再调用 `scripts/build-release.ps1`）；Linux 用 `cross` 交叉构建 x86 / x64 / arm / aarch64
+      四个 musl 静态目标，Windows 用 msvc 构建 x86 / x64（`crt-static`）；
       汇总后创建 GitHub Release
+- [x] `.github/workflows/rust.yml`：原生 fmt / clippy / test 在 ubuntu + windows 上跑，
+      另加 `cross-check` job 对 release 矩阵的其余目标做交叉编译检查
 - [x] [`docs/dev/release.md`](release.md)：产物、CI 流程、本地构建与发布前检查
 - [x] 本地验证：两个平台产物均构建成功，Windows 产物可运行并通过 `--check-config`，
       包内容与 `SHA256SUMS.txt` 正确
@@ -359,7 +363,7 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 16.1 [x] relay 代码验证后的收尾：保活初始化、`disconnect` 31 秒延迟回收、目标失败回 `failure`、客户端经 relay 跳跃与 `initialise` 改写单测；T4（空闲 300 秒）与 T10（C++ 四场景）验收通过（2026-11-01 完成）
 17. [x] 多配置文件并发启动（已知问题 #13，2026-11-01 完成）
 18. [x] M5 之性能基准：新增 `scripts/bench.py` + `scripts/bench-m5.ps1`，结果见 [`benchmark.md`](benchmark.md)（2026-11-01 完成；Rust↔Rust 吞吐约 3.3–4.9× C++ 基线，互操作方向约 1.2× / 2.0×，延迟不劣化）
-19. [x] M5 之发布工程化：`scripts/build-release.ps1`、`.github/workflows/release.yml`（tag 触发）、[`release.md`](release.md)（2026-11-01 完成；CI 用原生 musl，不需要 zig）
+19. [x] M5 之发布工程化：`.github/workflows/release.yml`（tag 触发，6 个目标：Linux x86/x64/arm/aarch64 musl + Windows x86/x64 msvc）、`scripts/build-release.ps1`（本地用）、[`release.md`](release.md)（2026-11-01 完成；CI 用 cross，不需要 zig）
 20. [ ] M10（远期）：FreeBSD `SO_SETFIB`（`fib_ingress` / `fib_egress`）
 21. [ ] M6：STUN、DDNS、`ip_address.log`
 
@@ -414,6 +418,7 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 | 2026-11-01 | **M5 性能基准**：新增 `scripts/bench.py`（吞吐 / 延迟测量客户端）与 `scripts/bench-m5.ps1`（四场景编排：`rust-rust` / `cpp-cpp` / `rust-client-cpp-server` / `cpp-client-rust-server`），新增 [`benchmark.md`](benchmark.md)。本机（Ryzen 9 7845HX / Windows 10 / Release）结果：`rust-rust` 21–31 MiB/s、`cpp-cpp` 6.3–6.5、`rust-client-cpp-server` 7.7–7.8、`cpp-client-rust-server` 13.0–13.3；P99 0.13–0.24 ms，与 C++ 相当；两进程工作集 Rust 11.5 MB vs C++ 23.1 MB。M5 性能验收（≥ C++ 80%、延迟不劣化）通过，阶段 4 的优化项暂不排期 |
 | 2026-11-01 | **M5 发布工程化**：新增 `scripts/build-release.ps1`（Windows 静态 CRT zip + Linux musl tar.gz + `SHA256SUMS.txt`；Windows 本地用 zigbuild，Linux 主机/CI 用原生 musl target）、`.github/workflows/release.yml`（`v*` tag 触发；ubuntu 用 `musl-tools` 原生构建、windows 用 msvc；创建 GitHub Release）、[`release.md`](release.md)；本地验证两平台产物构建成功、Windows 产物可运行、包内容与校验和正确 |
 | 2026-11-01 | docs: M5 标记完成；FreeBSD `SO_SETFIB` 从 M5 顺延到新增的 M10「远期平台项」（未排期），`migration-plan.md`、`progress.md` 的总览、已知问题 #5、下一步与相关注释同步；`relay-plan.md`、`docs/parameters.md`、`docs/README.md` 的平台说明改为指向 M10 |
+| 2026-11-01 | **ci: 发布矩阵扩到 6 个目标并去掉对脚本的依赖**：`release.yml` 的构建/打包逻辑全部内联（版本号读取、暂存目录、zip/tar.gz），Linux 用 `cross` 构建 `i686`/`x86_64`/`armv7`（musleabihf）/`aarch64` 四个 musl 静态目标，Windows 用 msvc 构建 `i686`/`x86_64`（`crt-static`）；`rust.yml` 保留 ubuntu/windows 原生 fmt/clippy/test，新增 `cross-check` job 对上述非本地架构做 `cross check` / `cargo check`；`scripts/build-release.ps1` 保留但仅用于本地手动打包（仍只覆盖 Windows x64 与 Linux x64），同步更新 `release.md`、根 `README.md`、`AGENTS.md` |
 
 ---
 

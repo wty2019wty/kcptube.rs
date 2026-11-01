@@ -68,14 +68,23 @@ cargo test --workspace
 cargo run -p kcptube -- --help
 ```
 
-发布产物（Windows zip + Linux musl tar.gz + 校验和）：
+发布产物（Linux x86 / x64 / arm / aarch64 的 musl 静态包，Windows x86 / x64 的 zip，外加校验和）。
+本地手动打包（Windows 上交叉编译 Linux 时需要 zig）：
 
 ```powershell
-$env:CARGO_ZIGBUILD_ZIG_PATH = "<zig.exe 路径>"   # 在 Windows 上交叉编译 Linux 时需要
+$env:CARGO_ZIGBUILD_ZIG_PATH = "<zig.exe 路径>"
 pwsh -File scripts/build-release.ps1
+
+如：
+    $env:CARGO_ZIGBUILD_ZIG_PATH = "D:\Program Files\Python313\Lib\site-packages\ziglang\zig.exe"
+    cargo zigbuild --release --target x86_64-unknown-linux-musl
+
+
 ```
 
-打 tag（`v<版本>`）会触发 GitHub Actions 构建、创建 Release 并推送容器镜像；
+
+
+打 tag（`v<版本>`）会触发 GitHub Actions 构建多架构产物并创建 Release，
 详见 [`docs/dev/release.md`](docs/dev/release.md)。
 
 

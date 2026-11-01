@@ -1,5 +1,8 @@
 # 构建 kcptube 发布产物（Windows + Linux musl），并生成校验和。
 #
+# 注意：CI（.github/workflows/release.yml）已内联多架构构建与打包逻辑，不再调用本脚本；
+# 本脚本仅供本地手动打包（只覆盖 Windows x64 与 Linux x64）。
+#
 # 用法：
 #   pwsh -File scripts/build-release.ps1                     # 两个平台都构建（需 zig）
 #   pwsh -File scripts/build-release.ps1 -Targets windows    # 只构建当前平台
