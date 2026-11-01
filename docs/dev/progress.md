@@ -11,9 +11,9 @@
 | 指标 | 数值 |
 |---|---|
 | C++ 参考实现 | 14,308 行（`legacy-cpp/`，含 ikcp 1,109 行） |
-| Rust 代码 | 约 10,715 行（22 个 `.rs` 文件，非空行） |
+| Rust 代码 | 约 10,800 行（22 个源文件，非空行） |
 | crate 数 | 12（11 个 lib + 1 个 bin） |
-| 单元/集成测试 | 142 个，全部通过 |
+| 单元/集成测试 | 149 个，全部通过 |
 | 整体完成度 | **M0~M4 完成，M5 进行中** |
 
 ```
@@ -22,7 +22,7 @@ M1 协议基础层      ██████████ 100%
 M2 KCP/传输        ██████████ 100%
 M3 TCP 最小互通     ██████████ 100%
 M4 完整模式         ██████████ 100%
-M5 relay/跨平台     ████████░░  85%   ← relay R1–R4 + --try 完成
+M5 relay/跨平台     █████████▌  95%   ← relay R1–R4、--try、T4/T10 验收完成
 M6 STUN/DDNS       ░░░░░░░░░░   0%
 ```
 
@@ -41,8 +41,8 @@ M6 STUN/DDNS       ░░░░░░░░░░   0%
 | `crates/client` | `client.cpp`（1917 行） | 🟢 100% | TCP + UDP 监听、握手（超时换端口、多地址逐个尝试、ICMP 错误不中断）、`raw_data`/mux 转发、端口跳跃、随机目标选择、保活、状态日志；`[custom_input*]` 映射与 `pre_connect_custom_address` 已接入 |
 | `crates/server` | `server.cpp`（1323 行） | 🟢 100% | 端口范围监听、TCP/UDP/mux 转发、端口跳跃重定向、会话回收、保活、状态日志、`ignore_destination_*` 目标；STUN/DDNS 移至 M6 |
 | `crates/logging` | `share_defines.cpp` 日志函数 | 🟢 100% | messages（追加）/ status（覆盖）两类文件已接入，ip 文件接口预留（随 M6）、`to_speed_unit` 与 C++ 逐档一致 |
-| `crates/relay` | `relay.cpp`（1802 行） | 🟢 90% | R1–R4 完成：ingress 监听、两侧握手改写、双向转发、空闲回收、两侧保活、两段式状态日志、egress 端口跳跃、mux/FEC/自定义映射验证；待与 C++ 端做人工互通验收 |
-| `crates/kcptube` | `main.cpp` | 🟢 90% | clap 参数、usage、`--check-config` 可用；`--try` 仍为骨架 |
+| `crates/relay` | `relay.cpp`（1802 行） | 🟢 100% | R1–R4 完成：ingress 监听、两侧握手改写、双向转发、空闲回收、两侧保活、两段式状态日志、egress 端口跳跃、mux/FEC/自定义映射验证；2026-11-01 修复保活从不发送、`disconnect` 立即回收、目标解析失败不回 `failure`；已完成 T4（300 秒空闲）与 T10（C++ 桌面原版四场景）人工验收 |
+| `crates/kcptube` | `main.cpp` | 🟢 100% | clap 参数、usage、`--check-config`、`--try`（`kcptube-tester`）均已接入 |
 | `--try` 连通性测试 | `tester.cpp`（392 行） | 🟢 100% | `kcptube-tester`：对「每个地址 × 每个端口」并发探测，输出与 C++ `PrintResults` 逐字一致 |
 
 ---
@@ -265,19 +265,19 @@ Rust 输出完全一致，见 `crates/fec/src/lib.rs::vectors_match_botan_zfec`�
 | `config` | 20 | 样例配置、端口/地址、预设、FEC/MTU、relay、自定义映射、IP 版本、错误文本、`kcp_config`/`fec_parameters` |
 | `transport` | 31 | 调度器、加密包层、UDP/TCP 封装、双通道 UDP 端到端、FEC 编解码/恢复/清理、mux 记录表、socket 重绑、blast、带宽、地址族解析、通配地址与调优助手、保活计时器、握手通道建立、端口探测超时 |
 | `logging` | 6 | `to_speed_unit` 分档、空路径、追加/覆盖写、状态摘要格式快照、告警追加 |
-| `relay` | 9 | 监听地址枚举、随机目标选择、带宽夹取、空闲判定、保活计时、两段式摘要格式 |
+| `relay` | 14 | 监听地址枚举、随机目标选择、带宽夹取、端口范围改写、空闲判定、保活调度与实发、`disconnect` 延迟回收、两段式摘要格式 |
 | `tester` | 3 | 结果格式快照、部分成功端口排序、模式判定 |
 | `server` | 2 | 端口连续性、超时常量与 C++ 对齐 |
-| `server`（集成） | 23 | `interop.rs`：TCP 往返、UDP 往返、FEC 往返、FEC 人为丢包、mux 往返、mux 启动重试、端口跳跃、保活/重连、100 并发、自定义映射（TCP/UDP/mux/`ignore_destination_address`）、relay TCP/UDP/保活/端口跳跃/mux TCP+UDP/mux 20 并发/FEC/自定义映射、`--try` 成功/失败 |
+| `server`（集成） | 25 | `interop.rs`：TCP 往返、UDP 往返、FEC 往返、FEC 人为丢包、mux 往返、mux 启动重试、端口跳跃、保活/重连、100 并发、自定义映射（TCP/UDP/mux/`ignore_destination_address`）、relay TCP/UDP/保活/端口跳跃/客户端经 relay 跳跃/mux TCP+UDP/mux 20 并发/FEC/自定义映射/目标失败回 `failure`、`--try` 成功/失败 |
 | `client` | 4 | 握手超时常量、监听项生成（常规 / `[custom_input*]` 分段 / `ipv4_only` 过滤） |
-| **合计** | **142** | 全部通过 |
+| **合计** | **149** | 全部通过 |
 
 命令与结果：
 
 ```
 cargo fmt --all -- --check        → 0
 cargo clippy --workspace --all-targets -- -D warnings → 0
-cargo test --workspace            → 142 passed, 0 failed
+cargo test --workspace            → 149 passed, 0 failed
 cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 ```
 
@@ -289,7 +289,7 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 
 | # | 问题 | 影响 | 计划 |
 |---|---|---|---|
-| 1 | relay R1–R4 已完成（含 mux/FEC/自定义映射），尚未与 C++ 端做人工互通验收 | relay 与 Rust client/server 全链路可用；跨实现互通待验证 | M5（T10 人工验收） |
+| 1 | ~~relay R1–R4 已完成（含 mux/FEC/自定义映射），未与 C++ 端做人工互通验收~~ | 2026-11-01 用桌面 C++ `20260329` 原版跑通 `core` / `fec` / `mux` / `reverse`（`scripts/verify-t10-relay-interop.ps1`） | 已关闭 |
 | 1.1 | relay 的 `listen_on` 不做 v4-mapped 映射（C++ 在未指定 IP 版本时会把 IPv4 映射成 `::ffff:a.b.c.d`） | 显式写 IPv4 时按 IPv4 绑定；Windows 默认 `IPV6_V6ONLY=1` 下映射绑定会失败，故有意偏离 | 保持现状，文档说明 |
 | 2 | ~~`--try` 仅打印“尚未实现”~~ | 已实现：新增 `kcptube-tester`，支持 client/relay 配置 | 已关闭 |
 | 3 | 会话空闲 255 秒会被强制关闭（与 C++ 一致），依赖 `keep_alive` 续命 | 长时间无流量的小连接可能被断开 | 保持兼容，文档说明 |
@@ -304,6 +304,7 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 | 9 | 端口跳跃时机不同：Rust 对所有数据通道按 `dport_refresh` 周期主动跳跃；C++ 跳过 TCP，且仅在链路空闲超时后探测 | 与 C++ 的跳跃频率/触发条件不一致，可能影响 QoS 观察 | 评估是否对齐 C++ 或保留现状并文档说明 |
 | 12 | ~~未指定 `ipv4_only` / `ipv6_only` 时 Rust 只监听 IPv4 通配 `0.0.0.0`~~ | 已修复：改为与 C++ 一致的 IPv6 通配 `[::]` + 双栈（`ipv6_only` 才置 `IPV6_V6ONLY`） | 已关闭 |
 | 13 | 多配置文件按顺序启动：`main.rs` 逐个 `await` 各 profile，客户端/服务端首个常驻的配置不退出时后续配置不会启动（C++ 并发运行） | 多配置文件部署实际只生效第一个 | 后续改为并发启动 |
+| 14 | ~~relay 的 255 秒空闲阈值只有单元测试与 5 秒保活用例，没有 255 秒级端到端长跑~~ | 2026-11-01 用 `scripts/verify-t4-relay-keepalive.ps1` 实测：客户端 `keep_alive=0`、relay `keep_alive=1`，空闲 300 秒后 TCP/UDP 仍通 | 已关闭 |
 
 ---
 
@@ -323,8 +324,9 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 12. [x] M5 之 relay R2：空闲回收、两侧保活、两段式状态日志（2026-11-01 完成）
 13. [x] M5 之 relay R3：egress 端口跳跃（2026-11-01 完成）
 14. [x] M5 之 relay R4：mux / FEC / 自定义映射经 relay 验证（2026-11-01 完成）
-15. [ ] M5 之 relay T10：与 C++ 客户端/服务端做人工互通验收
+15. [x] M5 之 relay T10：与 C++ 客户端/服务端做人工互通验收（2026-11-01 完成，桌面 C++ 原版四场景通过）
 16. [x] M5 之 `--try`（tester）：新建 `kcptube-tester`（2026-11-01 完成）
+16.1 [x] relay 代码验证后的收尾：保活初始化、`disconnect` 31 秒延迟回收、目标失败回 `failure`、客户端经 relay 跳跃与 `initialise` 改写单测；T4（空闲 300 秒）与 T10（C++ 四场景）验收通过（2026-11-01 完成）
 17. [ ] M5 之 FreeBSD `SO_SETFIB`、性能基准与发布
 18. [ ] M6：STUN、DDNS、`ip_address.log`
 
@@ -372,6 +374,8 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 | 2026-11-01 | **test: relay R4**：`start_relay_pair` 增加 `RelayPairOptions`（`mux_tunnels` / `fec`），新增 4 个端到端用例——mux 双隧道 TCP+UDP、20 并发 mux TCP、两段 FEC 32 KiB、客户端 `[custom_input]` + 服务端 `ignore_destination_*`（验证 `user_input` 目标经 relay 原样透传）；relay 本体无需改动，测试增至 137 |
 | 2026-11-01 | **feat: R5 `--try`**：新增 `crates/tester`（`kcptube-tester`）——对「每个目标地址 × 每个端口」并发建立 conv 0 通道、发送 `test_connection`、30 秒超时；client 取根配置、relay 取 `[forwarder]` 段；输出与 C++ `PrintResults` 逐字一致；`main` 的 `--try` 分支接入；与 C++ 的差异：地址解析失败记为全部失败并继续（C++ 中止整个测试）；新增 3 个单元测试与 2 个集成测试，已知问题 #2 关闭，测试增至 142 |
 | 2026-11-01 | docs: 使用文档与开发者文档分开放——`docs/` 仅保留面向使用者的文档（`README.md` 首页、`parameters.md`、`client-server.md`、`relay-mode.md`、`fec.md`、`mtu.md`、`custom-ip-mappings.md`、`specific-examples.md`）；本文件与 `migration-plan.md` / `refactor-backlog.md` / `relay-plan.md` 移入 `docs/dev/`，新增 [`docs/dev/README.md`](README.md) 开发文档索引；同步更新根 `README.md`、`AGENTS.md`、`docs/README.md`、`docs/client-server.md` 及源码注释中的路径引用，全部相对链接校验通过 |
+| 2026-11-01 | **fix（relay 代码验证收尾）**：① 保活——`RelaySession` 建会话时把两侧 `next_keep_alive` 初始化为当前时刻；此前一直为 `i64::MAX`，`send_keep_alive_if_due` 永远提前返回，relay 实际从不主动保活。新增 `scheduled_keep_alive_is_actually_sent`。② `disconnect` / `failure`——改为先记 `now + KEEPALIVE_TIMEOUT`（31 秒）再关闭，会话任务再保留 4 秒冲刷，对齐 C++ `expiring_kcp`；新增 `disconnect_expiry_waits_for_scheduled_time`。③ 目标解析失败或无法建立出口通道时向客户端回 `inform_error_packet`，不再干等 30 秒握手超时；新增 `relay_unreachable_target_reports_failure`。④ 新增 `relay_client_port_hopping_keeps_connection`（4 个 relay 端口，读取客户端日志确认确实跳跃）与 `initialise` 端口范围/带宽改写单测；修正 `relay-plan.md` §2.3/§2.5/§7.1 与过时模块注释。测试增至 149 |
+| 2026-11-01 | **T4 / T10 验收完成**：`scripts/verify-t10-relay-interop.ps1` 用桌面 C++ `20260329` 原版跑通 `core`（C++ client → Rust relay → C++ server）、`fec`、`mux` 与 `reverse`（Rust client → C++ relay → Rust server）；`scripts/verify-t4-relay-keepalive.ps1` 在客户端 `keep_alive=0`、relay `keep_alive=1` 下空闲 **300 秒**后 TCP/UDP 仍通，已知问题 #1、#14 关闭。新增 `scripts/build-legacy-mingw.ps1`、`net_echo.py`、`net_probe.py` 与两份验收脚本。同步登记 C++ relay 的两个限制（`[listener]` 段 `listen_on` 崩溃、`relay.cpp:1369` egress 误用 ingress 加密参数） |
 
 ---
 

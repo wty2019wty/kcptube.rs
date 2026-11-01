@@ -41,6 +41,7 @@ cargo test --workspace
   `relay` 与 `--try` 已可用，`[custom_input*]` / `ignore_destination_*` 已接入；计划见 `docs/dev/progress.md`。
 - `legacy-cpp/`：**只读参考实现**。不要为适配 Rust 或 MinGW 修改其中源码；编译适配放在外部副本或 `build/`。
 - `service/`：示例配置与 systemd unit `service/kcptube`（不是二进制）。
+- `scripts/`：T4/T10 人工验收脚本（PowerShell + Python 回显/探测），不属于发布产物；`build/legacy-*` 是 `scripts/build-legacy-mingw.ps1` 的临时副本与构建目录。
 - `docs/`：用户使用文档（入口 `docs/README.md`）；`docs/dev/`：开发者文档（移植计划、进度、重构与 relay 方案）；`legacy-cpp/docs/` 是上游文档，只读。
 
 ## 依赖与代码约定

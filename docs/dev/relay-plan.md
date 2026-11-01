@@ -68,8 +68,10 @@ client                    relay(ingress)              relay(egress)             
 
 新数据通道的 KCP 参数：两侧分别取 `ingress` / `egress` 分段的 `kcp_mtu`、窗口、`kcp_*` 预设，
 `RxMinRTO = 10`，带宽取各自分段的 `outbound/inbound_bandwidth`；
-两侧都 `keep_alive_send_time = keep_alive_response_time = now`。
-首个数据包被服务端确认后，用握手通道的 `GetRxSRTT()` 对两侧 `ResetWindowValues()`（`relay.cpp:1048`）。
+两侧都从建会话时刻开始排保活（`keep_alive=0` 的段关闭）。
+C++ 在首个数据包被服务端确认后用握手通道的 `GetRxSRTT()` 调用两侧 `ResetWindowValues()`
+（`relay.cpp:1048`）；Rust 在建会话时就用两侧握手通道的 SRTT 执行 `apply_data_tuning`，
+RTT 来源相同，只是应用时机略早。
 
 ### 2.4 数据面
 
@@ -88,8 +90,8 @@ client                    relay(ingress)              relay(egress)             
 |---|---|---|
 | 握手条目 | 建立后 `4s` 清空输出回调、`8s` 出表 | `KCP_CLEANUP_WAITS = 4` / `×2` |
 | forwarder | `4s` 停回调，`8s` 出表 | `RECEIVER_CLEANUP_WAITS` |
-| 数据会话 | `disconnect` 后 `keepalive_timeout + 4s` 才回收 | `KEEPALIVE_TIMEOUT = 31` |
-| 数据会话 | `min(最后活动, 保活差值) > 31 + keep_alive`（有保活）或 `最后活动 > 31`（无保活） | 同上 |
+| 数据会话 | `disconnect` / `failure` 后 `keepalive_timeout + 4s` 才回收 | `KEEPALIVE_TIMEOUT = 31` |
+| 端口跳跃 | 有保活时 `min(最后活动, 保活差值) > 31 + keep_alive`，无保活时 `最后活动 > 31` | 触发 `change_new_port`，**不是回收条件** |
 | 数据会话 | 任一方向 `> 255s` 强制回收 | `TIME_GAP_SECONDS` |
 | 数据会话 | 三条件同时超过 `egress->udp_timeout`：全局最后收、ingress 最后收、egress 最后收 | `udp_timeout` |
 
@@ -133,7 +135,7 @@ Rust 侧的具体取舍见 §9 Q2。
 `send_stun_request` / `save_external_ip_address` / `destination_dnstxt` 都依赖 M6 的 STUN 与 DNS TXT 实现，
 R1–R4 只保留接口位，不实现行为。
 
-### 2.9 C++ 侧已发现的复制粘贴缺陷
+### 2.9 C++ 侧已发现的缺陷与限制
 
 这些是**上游 bug**，Rust 不应照抄；但必须在 `docs/dev/progress.md` 登记为「有意偏离」：
 
@@ -143,6 +145,8 @@ R1–R4 只保留接口位，不实现行为。
 | `relay.cpp:2017` | `listener_fec_recovery = forwarder_status_counters.fec_recovery_count` | ingress 的 FEC 恢复数被记到 forwarder 段 | 用各自计数器 |
 | `relay.cpp:950` / `1005` | 两次写 `kcp_ptr_ingress->keep_alive_send_time` | egress 的保活基准时间永远是构造值 | 两侧分别初始化 |
 | `create_kcp_bidirections` | 用 `egress->dynamic_port_refresh` 决定首次跳跃间隔；`copy_settings` 不复制该字段，但 `check_settings` 会**递归**对 `[forwarder]` 段做一次独立归一化（默认 60） | 根上的 `dport_refresh` 对 relay 完全无效：设 30 不生效，设 0 也关不掉 | 见 §9 Q2 |
+| `relay.cpp:1369` | `data_sender_via_forwarder` 用 `ingress->encryption_password` / `ingress->encryption` 加密发往服务端的数据 | 两段加密密码或算法不同时，egress 数据无法被服务端解密；C++ relay 实际要求两段使用完全相同的加密参数 | 各段用自己的 codec；T10 `reverse` 场景因此让两段使用相同加密参数 |
+| 运行时（Windows，桌面 `20260329`） | `[listener]` 段写 `listen_on` 会触发 `0xC0000005` 访问违例 | C++ relay 只能把 `listen_on` 放根配置，且实际绑定 `0.0.0.0` | Rust relay 段内 `listen_on` 正常；T10 脚本对 C++ relay 使用根级配置 |
 
 ## 3. Rust 侧复用面与缺口
 
@@ -362,8 +366,8 @@ async fn drain_and_forward(from: &KcpChannel, to: &KcpChannel, session: &RelaySe
 | **R0** | 阶段 1 公共层（`kcp_config` / `fec_parameters` / `set_rx_minrto` / `apply_*_tuning` / `wildcard_addr` / `log_warning` / 状态摘要格式化） | ✅ 已完成 | 见 `refactor-backlog.md` 阶段 1 |
 | **R0.5** | 阶段 5 前置（`PortHop` / `KeepAlive` / `open_handshake_channel`） | ✅ 已完成 | 见 `refactor-backlog.md` 阶段 5；空闲清理随 R2 |
 | **R1** | relay 骨架：`Relay::new(root, ingress, egress)`、监听绑定、单 listener demux、握手中继、数据会话、双向转发、控制帧 | ✅ 已完成 | Rust client → relay → Rust server 的 TCP/UDP echo 通过 |
-| **R2** | 生命周期：握手/forwarder/会话清理、保活、状态日志、错误日志 | ✅ 已完成 | 空闲回收、`keep_alive` 用例通过 |
-| **R3** | 端口跳跃（relay 侧）+ 与客户端跳跃的联动 | ✅ 已完成 | 小 `dport_refresh` 下长连接不断 |
+| **R2** | 生命周期：握手/forwarder/会话清理、保活、状态日志、错误日志 | ✅ 已完成 | 空闲回收、`relay_keep_alive_stays_connected`；保活由 `scheduled_keep_alive_is_actually_sent` 直接验证 |
+| **R3** | 端口跳跃（relay 侧）+ 与客户端跳跃的联动 | ✅ 已完成 | `relay_port_hopping_keeps_connection`、`relay_client_port_hopping_keeps_connection` |
 | **R4** | mux / 自定义映射 / 多目标地址透传验证 | ✅ 已完成 | 新增 relay 变体的 mux/FEC/自定义映射用例 |
 | **R5** | `--try`（tester） | ✅ 已完成 | 见 §7.2 |
 
@@ -379,18 +383,18 @@ cargo test --workspace
 
 ### 7.1 relay
 
-| 编号 | 用例 | 方式 |
-|---|---|---|
-| T1 | client → relay → server，TCP echo 往返 | `crates/server/tests/interop.rs` 新增 relay 变体 |
-| T2 | 同上，UDP echo | 同上 |
-| T3 | 带 FEC（`fec=10:3`）经 relay | 同上 |
-| T4 | `keep_alive` 经 relay 续命超过 255 秒的空闲阈值 | 缩短常量或用 31s 判定 |
-| T5 | mux（`mux_tunnels=2`）经 relay，多连接并发 | 复用现有 100 并发用例 |
-| T6 | 客户端端口跳跃（`dport_refresh=2`）后连接不断 | 需要 R3 |
-| T7 | 客户端先断开，relay 会话按 35 秒规则回收 | 单元测试 + 日志断言 |
-| T8 | relay 侧目标不可达 → 回 `failure`，会话释放 | 单元测试 |
-| T9 | `initialise` 改写：带宽夹取、端口范围替换 | 纯函数单元测试 |
-| T10 | 与 C++ 客户端 / 服务端互通 | 需 C++ 二进制，作为人工验收项 |
+| 编号 | 用例 | 方式 | 状态 |
+|---|---|---|---|
+| T1 | client → relay → server，TCP echo 往返 | `interop.rs::relay_tcp_roundtrip` | ✅ |
+| T2 | 同上，UDP echo | `interop.rs::relay_udp_roundtrip` | ✅ |
+| T3 | 带 FEC（`fec=10:3`）经 relay | `interop.rs::relay_fec_roundtrip` | ✅ |
+| T4 | `keep_alive` 经 relay 续命超过 255 秒的空闲阈值 | 2026-11-01 实测：客户端 `keep_alive=0`、relay `keep_alive=1`，空闲 300 秒后 TCP/UDP 仍通（`scripts/verify-t4-relay-keepalive.ps1`） | ✅ |
+| T5 | mux（`mux_tunnels=2`）经 relay，多连接并发 | `relay_mux_tcp_and_udp_roundtrip`、`relay_mux_concurrent_tcp`（20 并发） | ✅ |
+| T6 | 客户端端口跳跃经 relay 后连接不断 | `relay_client_port_hopping_keeps_connection`（4 个 relay 端口，日志断言确实发生跳跃） | ✅ |
+| T7 | 客户端先断开，relay 会话按 35 秒规则回收 | `disconnect_expiry_waits_for_scheduled_time`（31 秒计划不可覆盖 + 到期关闭） | ✅ |
+| T8 | relay 侧目标不可达 → 回 `failure`，会话释放 | `relay_unreachable_target_reports_failure`（IP 版本过滤导致解析失败） | ✅ |
+| T9 | `initialise` 改写：带宽夹取、端口范围替换 | `server_initialise_uses_ingress_ports_and_limits`、`non_continuous_ingress_ports_keep_server_range`、`bandwidth_is_clamped_like_cpp` | ✅ |
+| T10 | 与 C++ 客户端 / 服务端互通 | 2026-11-01 用桌面 C++ `20260329` 原版跑通 `core` / `fec` / `mux` / `reverse`（`scripts/verify-t10-relay-interop.ps1`）；客户端端口跳跃与自定义映射未纳入自动脚本 | ✅ |
 
 ### 7.2 `--try`（tester）
 
@@ -425,7 +429,7 @@ Failure: NONE
 | # | 问题 | 建议 |
 |---|---|---|
 | Q1 | relay 的端口跳跃是否第一版就做？ | 建议 R3 再做，R1/R2 先不做，避免一次引入两个变量 |
-| Q2 | relay 的跳跃间隔只认 `[forwarder]` 段自己的 `dport_refresh`，根配置的同名项不生效（设 30 无效、设 0 关不掉） | 建议分段未显式设置时**继承根配置归一化后的值**；在 `progress.md` 登记为有意偏离 |
+| Q2 | relay 的跳跃间隔只认 `[forwarder]` 段自己的 `dport_refresh`，根配置的同名项不生效（设 30 无效、设 0 关不掉） | 已决定**保持与 C++ 一致**（仅 `[forwarder]` 生效，`copy_settings` 不复制该字段）；不再改为继承根配置 |
 | Q3 | §2.9 的四个 C++ 缺陷是否照抄？ | 建议修掉并登记；它们不影响线格式 |
 | Q4 | `--try` 是否与 relay 同批交付？ | 建议 R5 单独交付，互不阻塞 |
 | Q5 | 是否需要 `crates/tester` 新 crate？ | 建议新建；比塞进 relay 更清晰，也便于以后扩展 |
@@ -441,3 +445,5 @@ Failure: NONE
 | 2026-11-01 | R3 完成：`relay/port_hop` 在每次转发后按 `[forwarder].dport_refresh` 探测并切换 egress socket，复用 `transport::PortHop` 与 `drain_old_socket`；`RelaySession.egress_socket` 改为可替换。与 C++ 的两处有意偏离：探测失败按 `dport_refresh` 重试（C++ 一次失败即永久停止）、探测成功立即切换（C++ 需下一次发送）；新增 `relay_port_hopping_keeps_connection` |
 | 2026-11-01 | R4 完成：新增 relay 变体的 mux（双隧道 TCP+UDP、20 并发）、两段 FEC、自定义映射（`[custom_input]` + `ignore_destination_*`，验证 `user_input` 透传）用例；relay 本体无需改动，§7.1 的 T1–T5/T9 由自动化覆盖，T10（C++ 互通）仍需人工验收 |
 | 2026-11-01 | R5 完成：新增 `crates/tester`（`kcptube-tester`），`--try` 对「地址 × 端口」并发探测并输出与 C++ `PrintResults` 一致的文本；`main` 已接入，支持 client / relay 配置；新增 3 个单元测试与 2 个集成测试 |
+| 2026-11-01 | **代码验证后的收尾修复**：① 保活——建会话时把两侧 `next_keep_alive` 初始化为当前时刻，修复此前 `i64::MAX` 导致 `send_keep_alive_if_due` 永不发送的问题，新增 `scheduled_keep_alive_is_actually_sent`；② `disconnect` / `failure`——先记 `now + KEEPALIVE_TIMEOUT`（31 秒）再关闭，会话任务保留 4 秒冲刷，新增 `disconnect_expiry_waits_for_scheduled_time`；③ 目标解析失败 / 无法建立出口通道时向客户端回 `failure`（`inform_error_packet`），新增 `relay_unreachable_target_reports_failure`；④ 客户端经 relay 端口跳跃新增 `relay_client_port_hopping_keeps_connection`（读取客户端日志确认确实发生跳跃）；⑤ 服务端 `initialise` 改写抽成 `apply_ingress_details`，补端口范围与带宽单测；同步修正 §2.3 / §2.5 / §7.1 的时机与测试状态。T10 仍需人工验收 |
+| 2026-11-01 | **T4 / T10 人工验收通过**：`scripts/verify-t10-relay-interop.ps1` 四个场景全部 PASS（C++ client → Rust relay → C++ server 的 `core` / `fec` / `mux`，以及 Rust client → C++ relay → Rust server 的 `reverse`）；`scripts/verify-t4-relay-keepalive.ps1` 在客户端 `keep_alive=0`、relay `keep_alive=1` 下空闲 **300 秒**后 TCP/UDP 仍通。同期新增 `scripts/build-legacy-mingw.ps1`（在 `build/legacy-src` 副本上构建，不污染 `legacy-cpp/`）。验收中确认两个 C++ relay 限制：`[listener]` 段 `listen_on` 触发 `0xC0000005`；`relay.cpp:1369` 的 egress 误用 ingress 加密参数，导致两段必须使用相同密码与算法（已补入 §2.9）。§7.1 的 T1–T10 全部标为 ✅ |
