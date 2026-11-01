@@ -13,6 +13,7 @@
 | [优化与去重路线](refactor-backlog.md) | 跨模块重复审计（与 C++ 逐项对照）与阶段 1–5 的优化决策 |
 | [relay 实施方案](relay-plan.md) | C++ `relay.cpp` 行为拆解、Rust 任务模型、对齐清单、R0–R5 实施记录 |
 | [性能基准](benchmark.md) | M5 吞吐 / 延迟 / 内存对比（Rust vs C++），测量方法与结果 |
+| [发布流程](release.md) | 发布产物、GitHub Actions、本地构建与发布前检查 |
 
 ## 相关入口
 

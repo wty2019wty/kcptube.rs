@@ -363,7 +363,7 @@ KCP 本体（ikcp）是标准大端格式。
 
 ---
 
-### M5 relay / tester / 跨平台 / 性能（进行中：relay、tester、Linux 构建与性能基准已完成）
+### M5 relay / tester / 跨平台 / 性能（进行中：仅剩 FreeBSD `SO_SETFIB`）
 
 任务：
 
@@ -371,10 +371,10 @@ KCP 本体（ikcp）是标准大端格式。
 - [x] **tester**：`--try` 连通性测试（延时、丢包统计与输出格式，2026-11-01 完成）
 - [ ] **平台**：FreeBSD `SO_SETFIB`
 - [x] **平台**：Linux 构建（CI `ubuntu-latest` 已覆盖构建与测试）
-- [ ] **平台**：静态链接落地为脚本/CI 产物（当前仅根 `README.md` 的手动 `cargo zigbuild` 命令）
+- [x] **平台**：静态链接（`scripts/build-release.ps1`；CI 用 `musl-tools` 原生构建，Windows 本地用 zigbuild）
 - [x] **性能**：基准测试（吞吐、P99 延迟、内存），与 C++ 版对比（2026-11-01 完成，方法与结果见 [`benchmark.md`](benchmark.md)）
 - [ ] **性能**：必要优化（零拷贝、批量收发、`SO_REUSEPORT`）——基准已达标（Rust↔Rust 吞吐约为 C++ 基线 3.3–4.9 倍），暂不排期
-- [ ] **发布**：交叉编译脚本、GitHub Release、Docker 镜像
+- [x] **发布**：交叉编译脚本与 GitHub Release（2026-11-01 完成，见 [`release.md`](release.md)）
 
 验收：
 

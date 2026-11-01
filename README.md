@@ -35,7 +35,7 @@
 - [开发文档首页](docs/dev/README.md)
 - [移植计划](docs/dev/migration-plan.md)：目标、架构、阶段划分、协议关键事实、风险登记
 - [移植进度](docs/dev/progress.md)：当前状态、测试统计、已知问题、下一步
-- [优化与去重路线](docs/dev/refactor-backlog.md)、[relay 实施方案](docs/dev/relay-plan.md)、[性能基准](docs/dev/benchmark.md)
+- [优化与去重路线](docs/dev/refactor-backlog.md)、[relay 实施方案](docs/dev/relay-plan.md)、[性能基准](docs/dev/benchmark.md)、[发布流程](docs/dev/release.md)
 
 上游 C++ 版使用文档（仅供参考，行为以本仓库文档为准）：[`legacy-cpp/docs/`](legacy-cpp/docs)
 
@@ -66,10 +66,17 @@ docs/dev/      开发者文档：移植计划、进度、重构与 relay 方案
 cargo build
 cargo test --workspace
 cargo run -p kcptube -- --help
-
-$env:CARGO_ZIGBUILD_ZIG_PATH = "D:\Program Files\Python313\Lib\site-packages\ziglang\zig.exe"
-cargo zigbuild --release --target x86_64-unknown-linux-musl
 ```
+
+发布产物（Windows zip + Linux musl tar.gz + 校验和）：
+
+```powershell
+$env:CARGO_ZIGBUILD_ZIG_PATH = "<zig.exe 路径>"   # 在 Windows 上交叉编译 Linux 时需要
+pwsh -File scripts/build-release.ps1
+```
+
+打 tag（`v<版本>`）会触发 GitHub Actions 构建、创建 Release 并推送容器镜像；
+详见 [`docs/dev/release.md`](docs/dev/release.md)。
 
 
 

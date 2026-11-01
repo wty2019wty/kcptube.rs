@@ -22,7 +22,7 @@ M1 协议基础层      ██████████ 100%
 M2 KCP/传输        ██████████ 100%
 M3 TCP 最小互通     ██████████ 100%
 M4 完整模式         ██████████ 100%
-M5 relay/跨平台     █████████▊  97%   ← relay、--try、T4/T10、性能基准完成；剩 SO_SETFIB 与发布
+M5 relay/跨平台     █████████▉  99%   ← 仅剩 FreeBSD SO_SETFIB；relay、--try、性能、发布完成
 M6 STUN/DDNS       ░░░░░░░░░░   0%
 ```
 
@@ -266,6 +266,22 @@ Rust 输出完全一致，见 `crates/fec/src/lib.rs::vectors_match_botan_zfec`�
 
 ---
 
+### 3.13 发布工程化（M5，已完成）
+
+- [x] `scripts/build-release.ps1`：一次构建 Windows（静态 CRT）与 Linux musl（Windows 本地用
+      zigbuild，Linux 主机/CI 用原生 `--target x86_64-unknown-linux-musl`），输出
+      `dist/kcptube-<版本>-{windows-x64.zip,linux-x64.tar.gz}` 与 `SHA256SUMS.txt`
+- [x] 发布包内容固定为可执行文件 + `README.md` / `LICENSE` / `THIRD-PARTY.md` +
+      `docs/*.md`（使用文档）+ `service/`（示例配置与 systemd unit），不含 `docs/dev/`
+- [x] `.github/workflows/release.yml`：推送 `v*` tag 触发；`ubuntu-latest` 用
+      `musl-tools` + musl target 原生构建（**不依赖 zig**），`windows-latest` 用 msvc；
+      汇总后创建 GitHub Release
+- [x] [`docs/dev/release.md`](release.md)：产物、CI 流程、本地构建与发布前检查
+- [x] 本地验证：两个平台产物均构建成功，Windows 产物可运行并通过 `--check-config`，
+      包内容与 `SHA256SUMS.txt` 正确
+
+---
+
 ## 4. 测试统计
 
 | crate | 测试数 | 覆盖内容 |
@@ -342,8 +358,9 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 16.1 [x] relay 代码验证后的收尾：保活初始化、`disconnect` 31 秒延迟回收、目标失败回 `failure`、客户端经 relay 跳跃与 `initialise` 改写单测；T4（空闲 300 秒）与 T10（C++ 四场景）验收通过（2026-11-01 完成）
 17. [x] 多配置文件并发启动（已知问题 #13，2026-11-01 完成）
 18. [x] M5 之性能基准：新增 `scripts/bench.py` + `scripts/bench-m5.ps1`，结果见 [`benchmark.md`](benchmark.md)（2026-11-01 完成；Rust↔Rust 吞吐约 3.3–4.9× C++ 基线，互操作方向约 1.2× / 2.0×，延迟不劣化）
-19. [ ] M5 之 FreeBSD `SO_SETFIB` 与发布（静态链接脚本/CI 产物、GitHub Release、Docker）
-20. [ ] M6：STUN、DDNS、`ip_address.log`
+19. [x] M5 之发布工程化：`scripts/build-release.ps1`、`.github/workflows/release.yml`（tag 触发）、[`release.md`](release.md)（2026-11-01 完成；CI 用原生 musl，不需要 zig）
+20. [ ] M5 之 FreeBSD `SO_SETFIB`
+21. [ ] M6：STUN、DDNS、`ip_address.log`
 
 完成标准：M4 验收表中的 UDP、mux、端口跳跃、自定义映射全部可用；STUN/DDNS 转入 M6。
 
@@ -394,6 +411,7 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 | 2026-11-01 | docs: 按代码现状校准文档瑕疵——`docs/README.md` 的模式列表与状态表统一为「中继模式可用」；`relay-mode.md` 状态行更新为已完成 C++ T10 四个场景的互通验收；`migration-plan.md` crate 数改为 12（11 lib + 1 bin）、勾选 M5 的 relay/tester 与 Linux 构建、把「静态链接」拆为未完成项、补充端到端矩阵的口径说明；`refactor-backlog.md` 阶段 5 的空闲清理按 R2 的实际落地更新；`relay-plan.md` 统一 `relay.cpp` 行数口径并修正 relay 保活的实际实现（自管 `next_keep_alive`，未复用 `transport::KeepAlive`）；根 `README.md` 目录结构补 `tester/`；`progress.md` 代码量更新为 55 个源文件 / 14,114 行（测试仍为 149，`cargo test --workspace` 实跑复核） |
 | 2026-11-01 | **fix（已知问题 #13）**：`main` 改为用 `tokio::task::JoinSet` **并发**运行全部配置文件，对齐 C++ 在同一 `io_context` 上同时启动 client/server/relay；此前逐个 `await` 会让首个常驻配置独占进程、后续配置永不启动。新增 `crates/kcptube/tests/multi_profile.rs`（启动真实二进制、两个 `mode=server` 配置、断言两个 UDP 端口都监听），`docs/README.md` 与 `docs/client-server.md` 的多配置说明同步改为并发；测试增至 150，`fmt` / `clippy -D warnings` / `test --workspace` 全绿 |
 | 2026-11-01 | **M5 性能基准**：新增 `scripts/bench.py`（吞吐 / 延迟测量客户端）与 `scripts/bench-m5.ps1`（四场景编排：`rust-rust` / `cpp-cpp` / `rust-client-cpp-server` / `cpp-client-rust-server`），新增 [`benchmark.md`](benchmark.md)。本机（Ryzen 9 7845HX / Windows 10 / Release）结果：`rust-rust` 21–31 MiB/s、`cpp-cpp` 6.3–6.5、`rust-client-cpp-server` 7.7–7.8、`cpp-client-rust-server` 13.0–13.3；P99 0.13–0.24 ms，与 C++ 相当；两进程工作集 Rust 11.5 MB vs C++ 23.1 MB。M5 性能验收（≥ C++ 80%、延迟不劣化）通过，阶段 4 的优化项暂不排期 |
+| 2026-11-01 | **M5 发布工程化**：新增 `scripts/build-release.ps1`（Windows 静态 CRT zip + Linux musl tar.gz + `SHA256SUMS.txt`；Windows 本地用 zigbuild，Linux 主机/CI 用原生 musl target）、`.github/workflows/release.yml`（`v*` tag 触发；ubuntu 用 `musl-tools` 原生构建、windows 用 msvc；创建 GitHub Release）、[`release.md`](release.md)；本地验证两平台产物构建成功、Windows 产物可运行、包内容与校验和正确 |
 
 ---
 
