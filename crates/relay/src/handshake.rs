@@ -435,6 +435,13 @@ impl RelayState {
             egress_socket,
             tx,
         ));
+        // 对应 C++ `create_kcp_bidirections`：`dport_refresh` 为 0 时关闭跳跃
+        let refresh = i64::from(self.egress.dynamic_port_refresh);
+        session.set_hopping_at(if refresh > 0 {
+            now_secs() + refresh
+        } else {
+            i64::MAX
+        });
         self.sessions.lock().await.insert(conv, session.clone());
 
         let state = self.clone();

@@ -851,6 +851,77 @@ async fn start_relay_pair(keep_alive: u16) -> (u16, Vec<JoinHandle<()>>) {
     (client_port, tasks)
 }
 
+/// 启动「服务端多端口 + relay（`dport_refresh=1`）+ 客户端」，用于端口跳跃验证。
+///
+/// `dport_refresh` 在配置解析时会被归一化到最小 20 秒；这里直接覆盖解析结果，
+/// 让测试在几秒内就能跨越多次跳跃。
+async fn start_relay_pair_with_hop(
+    server_port_count: u16,
+    refresh: i16,
+) -> (u16, Vec<JoinHandle<()>>) {
+    let (echo_port, echo_tasks) = echo_server().await;
+    let server_start = allocate_ports(server_port_count);
+    let server_end = server_start + server_port_count - 1;
+    let relay_port = allocate_ports(1);
+    let client_port = allocate_ports(1);
+
+    let server_settings = settings(&format!(
+        "mode=server\n\
+         listen_on=127.0.0.1\n\
+         listen_port={server_start}-{server_end}\n\
+         destination_address=127.0.0.1\n\
+         destination_port={echo_port}\n\
+         encryption_password=server-password\n\
+         encryption_algorithm=AES-OCB\n\
+         kcp=regular3\n"
+    ));
+    let mut relay_settings = settings(&format!(
+        "mode=relay\n\
+         [listener]\n\
+         listen_on=127.0.0.1\n\
+         listen_port={relay_port}\n\
+         encryption_password=client-password\n\
+         encryption_algorithm=AES-GCM\n\
+         kcp=regular3\n\
+         [forwarder]\n\
+         destination_address=127.0.0.1\n\
+         destination_port={server_start}-{server_end}\n\
+         encryption_password=server-password\n\
+         encryption_algorithm=AES-OCB\n\
+         kcp=fast3\n"
+    ));
+    if let Some(egress) = relay_settings.egress.as_mut() {
+        egress.dynamic_port_refresh = refresh;
+    }
+    let client_settings = settings(&format!(
+        "mode=client\n\
+         listen_on=127.0.0.1\n\
+         listen_port={client_port}\n\
+         destination_address=127.0.0.1\n\
+         destination_port={relay_port}\n\
+         encryption_password=client-password\n\
+         encryption_algorithm=AES-GCM\n\
+         kcp=regular3\n"
+    ));
+
+    let server_task = tokio::spawn(async move {
+        let _ = Server::new(server_settings).run().await;
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let relay_task = tokio::spawn(async move {
+        let _ = Relay::new(relay_settings).run().await;
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let client_task = tokio::spawn(async move {
+        let _ = Client::new(client_settings).run().await;
+    });
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    let mut tasks = vec![server_task, relay_task, client_task];
+    tasks.extend(echo_tasks);
+    (client_port, tasks)
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn relay_tcp_roundtrip() {
     let (client_port, tasks) = start_relay_pair(0).await;
@@ -890,6 +961,27 @@ async fn relay_keep_alive_stays_connected() {
 
     stop(tasks);
     result.expect("跨多个保活周期后 relay 连接应保持可用");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn relay_port_hopping_keeps_connection() {
+    // relay 的 `[forwarder].dport_refresh=1`：每次转发后检查，约每秒一次跳跃，
+    // 服务端监听 4 个连续端口，relay 在它们之间随机探测并切换
+    let (client_port, tasks) = start_relay_pair_with_hop(4, 1).await;
+    let result = tokio::time::timeout(Duration::from_secs(30), async {
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", client_port))
+            .await
+            .unwrap();
+        let (mut reader, mut writer) = stream.split();
+        for index in 0..6u8 {
+            exchange(&mut reader, &mut writer, &format!("hop #{index}"), 1).await;
+            tokio::time::sleep(Duration::from_millis(900)).await;
+        }
+    })
+    .await;
+
+    stop(tasks);
+    result.expect("relay 端口跳跃期间连接应保持可用");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

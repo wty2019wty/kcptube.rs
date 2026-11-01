@@ -26,6 +26,7 @@
 mod handshake;
 mod listener;
 mod maintenance;
+mod port_hop;
 mod session;
 mod state;
 mod status;

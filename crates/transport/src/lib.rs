@@ -27,7 +27,7 @@ pub use channel::{KcpChannel, open_handshake_channel};
 pub use fec::{FecReceiver, FecSender};
 pub use keep_alive::KeepAlive;
 pub use mux::{MuxCommand, MuxEvent, MuxRecord, MuxSink, MuxTcpSink, MuxTunnel};
-pub use port_hop::PortHop;
+pub use port_hop::{PortHop, drain_old_socket};
 pub use tcp::{TcpListenerSession, TcpSession};
 pub use udp::{UdpBindOptions, UdpEndpoint, wildcard_addr};
 

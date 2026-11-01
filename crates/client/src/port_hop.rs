@@ -7,10 +7,12 @@
 
 use crate::ClientError;
 use crate::state::ClientState;
-use kcptube_protocol::constant::{PACKET_LENGTH, RECEIVER_CLEANUP_WAITS};
-use kcptube_transport::{KcpChannel, PortHop, UdpEndpoint, resolve_endpoints_filtered};
+use kcptube_protocol::constant::RECEIVER_CLEANUP_WAITS;
+use kcptube_transport::{
+    KcpChannel, PortHop, UdpEndpoint, drain_old_socket, resolve_endpoints_filtered,
+};
 use std::sync::Arc;
-use tokio::time::{Duration, Instant, interval};
+use tokio::time::{Duration, interval};
 
 /// 定时端口跳跃任务（对应 C++ `change_new_port` / `test_before_change`）。
 ///
@@ -43,8 +45,9 @@ pub(crate) fn spawn_port_hopper(state: &Arc<ClientState>, channel: &Arc<KcpChann
                     // 旧 socket 继续收 4 秒，尽量接住切换瞬间在途的报文
                     // （对应 C++ `expiring_forwarders` 在 4 秒后 stop）
                     let reader = channel.clone();
+                    let drain = (RECEIVER_CLEANUP_WAITS / 2).max(1) as u64;
                     tokio::spawn(async move {
-                        drain_old_socket(reader, old_socket).await;
+                        drain_old_socket(reader, old_socket, Duration::from_secs(drain)).await;
                     });
                 }
                 Ok(None) => {}
@@ -70,24 +73,5 @@ async fn hop_port(
             Ok(Some(old))
         }
         None => Ok(None),
-    }
-}
-
-/// 切换后继续读取旧 socket 一段时间，避免在途 ACK 被直接丢弃。
-async fn drain_old_socket(channel: Arc<KcpChannel>, socket: UdpEndpoint) {
-    let deadline = Instant::now() + Duration::from_secs((RECEIVER_CLEANUP_WAITS / 2).max(1) as u64);
-    let mut buffer = vec![0u8; PACKET_LENGTH + 256];
-    loop {
-        tokio::select! {
-            _ = tokio::time::sleep_until(deadline) => break,
-            result = socket.recv_from(&mut buffer) => {
-                match result {
-                    Ok((size, _)) => {
-                        let _ = channel.process_datagram(&buffer[..size]).await;
-                    }
-                    Err(_) => break,
-                }
-            }
-        }
     }
 }

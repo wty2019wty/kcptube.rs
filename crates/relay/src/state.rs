@@ -10,6 +10,7 @@ use kcptube_transport::{KcpChannel, PacketCodec, UdpEndpoint, now_secs};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use tokio::sync::{Mutex, mpsc};
 
@@ -137,14 +138,18 @@ pub(crate) struct RelaySession {
     pub(crate) ingress: Arc<KcpChannel>,
     /// 面向真实服务端
     pub(crate) egress: Arc<KcpChannel>,
-    /// 与 `egress` 共用的独占 socket（会话任务负责接收）
-    pub(crate) egress_socket: UdpEndpoint,
+    /// 与 `egress` 共用的独占 socket（端口跳跃会替换它）
+    egress_socket: StdMutex<UdpEndpoint>,
     closed: AtomicBool,
     /// 最近一次向前转发数据帧的时刻（对应 C++ `last_data_transfer_time`）
     last_data_transfer: AtomicI64,
     /// 两侧保活的下一次发送时刻（Unix 秒）
     ingress_next_keep_alive: AtomicI64,
     egress_next_keep_alive: AtomicI64,
+    /// 下一次允许端口跳跃的时刻（`i64::MAX` 表示关闭或探测中）
+    hopping_at: AtomicI64,
+    /// 是否有进行中的端口探测
+    hopping_testing: AtomicBool,
     /// listener 投递解密后的明文帧
     pub(crate) tx: mpsc::Sender<Vec<u8>>,
 }
@@ -164,13 +169,42 @@ impl RelaySession {
             protocol,
             ingress,
             egress,
-            egress_socket,
+            egress_socket: StdMutex::new(egress_socket),
             closed: AtomicBool::new(false),
             last_data_transfer: AtomicI64::new(now),
             ingress_next_keep_alive: AtomicI64::new(i64::MAX),
             egress_next_keep_alive: AtomicI64::new(i64::MAX),
+            hopping_at: AtomicI64::new(i64::MAX),
+            hopping_testing: AtomicBool::new(false),
             tx,
         }
+    }
+
+    /// 当前 egress 收包 socket（端口跳跃后会变化）。
+    pub(crate) fn egress_socket(&self) -> UdpEndpoint {
+        self.egress_socket
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_else(|poisoned| poisoned.into_inner().clone())
+    }
+
+    pub(crate) fn replace_egress_socket(&self, socket: UdpEndpoint) {
+        if let Ok(mut guard) = self.egress_socket.lock() {
+            *guard = socket;
+        }
+    }
+
+    pub(crate) fn hopping_at(&self) -> i64 {
+        self.hopping_at.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn set_hopping_at(&self, at: i64) {
+        self.hopping_at.store(at, Ordering::Relaxed);
+    }
+
+    /// 标记/取消「探测进行中」，返回之前的状态。
+    pub(crate) fn swap_hopping_testing(&self, value: bool) -> bool {
+        self.hopping_testing.swap(value, Ordering::SeqCst)
     }
 
     /// 标记会话结束（维护任务判定空闲，或任一方向收到 `disconnect` / `failure`）。

@@ -126,3 +126,60 @@ impl PortHop {
         }
     }
 }
+
+/// 切换后继续读取旧 socket 一段时间，避免在途 ACK 被直接丢弃。
+///
+/// client 与 relay 的端口跳跃共用：调用方在 `rebind` 成功后把旧 socket 交进来，
+/// 期间收到的数据报仍交给同一条 KCP 通道处理。
+pub async fn drain_old_socket(channel: Arc<KcpChannel>, socket: UdpEndpoint, duration: Duration) {
+    let deadline = Instant::now() + duration;
+    let mut buffer = vec![0u8; PACKET_LENGTH + 256];
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep_until(deadline) => break,
+            result = socket.recv_from(&mut buffer) => {
+                match result {
+                    Ok((size, _)) => {
+                        let _ = channel.process_datagram(&buffer[..size]).await;
+                    }
+                    Err(_) => break,
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::PacketCodec;
+    use kcptube_crypto::EncryptionMode;
+
+    #[tokio::test]
+    async fn probe_times_out_without_response() {
+        let hop = PortHop::new(
+            Arc::new(PacketCodec::new(EncryptionMode::None, "")),
+            None,
+            1400,
+        )
+        .with_timeout(Duration::from_millis(150));
+
+        let socket = UdpEndpoint::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let local = socket.local_addr().unwrap();
+        let channel = Arc::new(
+            KcpChannel::new(
+                Arc::new(PacketCodec::new(EncryptionMode::None, "")),
+                KcpConfig::handshake(1400),
+                socket,
+                "127.0.0.1:9".parse().unwrap(),
+            )
+            .await
+            .unwrap(),
+        );
+
+        let result = hop.probe(&channel, &[local]).await;
+        assert!(matches!(result, Ok(None)), "超时后应返回 Ok(None)");
+    }
+}

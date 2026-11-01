@@ -35,6 +35,8 @@ pub(crate) async fn run_session(
         if session.is_closed() {
             break;
         }
+        // 端口跳跃会替换 egress socket，每轮重新取当前值
+        let egress_socket = session.egress_socket();
         tokio::select! {
             received = rx.recv() => {
                 let Some(plain) = received else { break };
@@ -46,7 +48,7 @@ pub(crate) async fn run_session(
                 }
                 let _ = drain(&state, &session, true, &mut inner).await;
             }
-            result = session.egress_socket.recv_from(&mut datagram) => {
+            result = egress_socket.recv_from(&mut datagram) => {
                 let Ok((size, _)) = result else { continue };
                 if session.egress.process_datagram(&datagram[..size]).await.is_err() {
                     continue;
@@ -83,7 +85,7 @@ pub(crate) async fn run_session(
 ///
 /// `from_ingress = true` 表示方向为「客户端 → relay → 服务端」。
 async fn drain(
-    state: &RelayState,
+    state: &Arc<RelayState>,
     session: &Arc<RelaySession>,
     from_ingress: bool,
     buffer: &mut [u8],
@@ -132,6 +134,8 @@ async fn drain(
             _ => {
                 to.send(&buffer[..size]).await?;
                 session.mark_data_transfer(now_secs());
+                // 对应 C++ `data_sender_*` 每次发送后调用 `change_new_port`
+                crate::port_hop::maybe_hop(state, session);
             }
         }
     }
