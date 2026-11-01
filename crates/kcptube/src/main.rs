@@ -22,6 +22,7 @@ use kcptube_relay::Relay;
 use kcptube_server::Server;
 use kcptube_tester::Tester;
 use std::path::PathBuf;
+use tokio::task::JoinSet;
 
 /// 程序版本号的唯一来源：根 `Cargo.toml` 的 `[workspace.package] version`
 /// （`crates/kcptube/Cargo.toml` 经 `version.workspace = true` 继承）。
@@ -145,46 +146,61 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let mut started: usize = 0;
+    // 与 C++ 版一致：所有配置文件**并发**运行。C++ 在同一个 io_context 上同时启动
+    // 全部 client/server/relay；此前逐个 `await` 会让第一个常驻模式独占进程，
+    // 后续配置文件永远不会启动（已知问题 #13）。
+    let mut tasks: JoinSet<anyhow::Result<()>> = JoinSet::new();
     for settings in profiles {
-        let result = match settings.mode {
-            RunningMode::Client => Client::new(settings.clone())
-                .run()
-                .await
-                .map_err(anyhow::Error::from),
-            RunningMode::Server => Server::new(settings.clone())
-                .run()
-                .await
-                .map_err(anyhow::Error::from),
-            RunningMode::Relay => Relay::new(settings.clone())
-                .run()
-                .await
-                .map_err(anyhow::Error::from),
-            RunningMode::RelayIngress | RunningMode::RelayEgress => {
-                eprintln!(
-                    "配置文件 {} 的 relay 分段不能单独运行",
-                    settings.config_filename.display()
-                );
-                Ok(())
-            }
-            RunningMode::Unknown => {
-                eprintln!(
-                    "配置文件 {} 未指定有效的 mode",
-                    settings.config_filename.display()
-                );
-                Ok(())
-            }
-        };
+        tasks.spawn(run_profile(settings));
+    }
 
-        match result {
-            Ok(()) => started += 1,
-            Err(error) => eprintln!("{error}"),
+    let mut started: usize = 0;
+    while let Some(joined) = tasks.join_next().await {
+        match joined {
+            Ok(Ok(())) => started += 1,
+            Ok(Err(error)) => eprintln!("{error}"),
+            Err(error) => eprintln!("后台任务异常退出: {error}"),
         }
     }
 
+    // 只有全部任务都结束时才会走到这里：常驻模式正常运行时进程一直存活。
+    // 因此这里等价于「没有任何一个配置成功启动」。
     if started == 0 {
         eprintln!("没有成功启动任何模式");
     }
 
     Ok(())
+}
+
+/// 运行单个配置文件对应的模式。
+///
+/// 常驻模式（client / server / relay）正常运行时不会返回；返回 `Ok(())` 表示该
+/// 配置文件不是可运行模式（relay 分段、未知 `mode`），返回 `Err` 表示启动或运行失败。
+async fn run_profile(settings: UserSettings) -> anyhow::Result<()> {
+    let config_filename = settings.config_filename.clone();
+    match settings.mode {
+        RunningMode::Client => Client::new(settings)
+            .run()
+            .await
+            .map_err(anyhow::Error::from),
+        RunningMode::Server => Server::new(settings)
+            .run()
+            .await
+            .map_err(anyhow::Error::from),
+        RunningMode::Relay => Relay::new(settings)
+            .run()
+            .await
+            .map_err(anyhow::Error::from),
+        RunningMode::RelayIngress | RunningMode::RelayEgress => {
+            eprintln!(
+                "配置文件 {} 的 relay 分段不能单独运行",
+                config_filename.display()
+            );
+            Ok(())
+        }
+        RunningMode::Unknown => {
+            eprintln!("配置文件 {} 未指定有效的 mode", config_filename.display());
+            Ok(())
+        }
+    }
 }
