@@ -25,8 +25,10 @@
 
 mod handshake;
 mod listener;
+mod maintenance;
 mod session;
 mod state;
+mod status;
 mod util;
 
 use crate::listener::run_listener;
@@ -69,6 +71,9 @@ impl Relay {
         if addresses.is_empty() {
             return Err(RelayError::Startup("listen_port is not set".to_string()));
         }
+
+        // 维护任务：空闲回收 + 两侧保活 + 状态日志
+        tokio::spawn(maintenance::run_maintenance(state.clone()));
 
         let mut tasks = tokio::task::JoinSet::new();
         for address in addresses {

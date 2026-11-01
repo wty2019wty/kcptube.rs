@@ -44,21 +44,21 @@ pub(crate) async fn run_session(
                 if session.ingress.accept_frame(frame).await.is_err() {
                     continue;
                 }
-                let _ = drain(&session, true, &mut inner).await;
+                let _ = drain(&state, &session, true, &mut inner).await;
             }
             result = session.egress_socket.recv_from(&mut datagram) => {
                 let Ok((size, _)) = result else { continue };
                 if session.egress.process_datagram(&datagram[..size]).await.is_err() {
                     continue;
                 }
-                let _ = drain(&session, false, &mut inner).await;
+                let _ = drain(&state, &session, false, &mut inner).await;
             }
             _ = ticker.tick() => {
                 let now = now_ms();
                 let _ = session.ingress.update(now).await;
                 let _ = session.egress.update(now).await;
-                let _ = drain(&session, true, &mut inner).await;
-                let _ = drain(&session, false, &mut inner).await;
+                let _ = drain(&state, &session, true, &mut inner).await;
+                let _ = drain(&state, &session, false, &mut inner).await;
             }
         }
     }
@@ -83,6 +83,7 @@ pub(crate) async fn run_session(
 ///
 /// `from_ingress = true` 表示方向为「客户端 → relay → 服务端」。
 async fn drain(
+    state: &RelayState,
     session: &Arc<RelaySession>,
     from_ingress: bool,
     buffer: &mut [u8],
@@ -100,6 +101,18 @@ async fn drain(
             Err(error) => return Err(error.into()),
         };
         let (feature, protocol, _) = unpack_inner(&buffer[..size])?;
+
+        // 对应 C++ 在两个 drain 循环末尾的计数：
+        // ingress 方向 → listener.receive(inner) + forwarder.send(inner)
+        // egress 方向 → forwarder.receive(inner) + listener.send(inner)
+        if from_ingress {
+            state.listener_counters.add_ingress_inner(size);
+            state.forwarder_counters.add_egress_inner(size);
+        } else {
+            state.forwarder_counters.add_ingress_inner(size);
+            state.listener_counters.add_egress_inner(size);
+        }
+
         match feature {
             Feature::KeepAlive => {
                 // 保活只在本侧回应，不转发（对应 C++ 两侧同名分支）
@@ -118,6 +131,7 @@ async fn drain(
             // 以及其他内层帧：原样转发
             _ => {
                 to.send(&buffer[..size]).await?;
+                session.mark_data_transfer(now_secs());
             }
         }
     }

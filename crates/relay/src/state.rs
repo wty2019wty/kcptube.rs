@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! relay 运行期状态：握手表、数据会话表与两侧编解码器。
+//! relay 运行期状态：握手表、数据会话表、两段统计与两侧编解码器。
 
 use crate::RelayError;
 use kcptube_config::UserSettings;
-use kcptube_logging::log_warning;
+use kcptube_logging::{LOGGING_GAP_SECONDS, StatusCounters, log_warning};
+use kcptube_protocol::packet::ProtocolType;
 use kcptube_transport::{KcpChannel, PacketCodec, UdpEndpoint, now_secs};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use tokio::sync::{Mutex, mpsc};
 
 /// relay 的全局状态，由全部监听 socket 共享。
@@ -27,6 +28,12 @@ pub(crate) struct RelayState {
     pub(crate) handshakes: Mutex<HashMap<SocketAddr, Arc<HandshakeEntry>>>,
     /// `conv` → 数据会话（对应 C++ `id_map_to_both_sides`）
     pub(crate) sessions: Mutex<HashMap<u32, Arc<RelaySession>>>,
+    /// `[Client <-> This]` 段的计数（对应 C++ `listener_status_counters`）
+    pub(crate) listener_counters: Arc<StatusCounters>,
+    /// `[This <-> Remote]` 段的计数（对应 C++ `forwarder_status_counters`）
+    pub(crate) forwarder_counters: Arc<StatusCounters>,
+    /// 下一次输出状态摘要的时刻（Unix 秒）
+    pub(crate) next_status_at: AtomicI64,
 }
 
 impl RelayState {
@@ -64,6 +71,9 @@ impl RelayState {
             ingress_fec_original: ingress_fec.map(|(k, _)| k as usize),
             handshakes: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
+            listener_counters: Arc::new(StatusCounters::default()),
+            forwarder_counters: Arc::new(StatusCounters::default()),
+            next_status_at: AtomicI64::new(now_secs() + LOGGING_GAP_SECONDS as i64),
         })
     }
 
@@ -86,6 +96,8 @@ pub(crate) struct HandshakeEntry {
     pub(crate) egress_socket: Mutex<Option<UdpEndpoint>>,
     /// 当前选定的服务端地址
     pub(crate) target: Mutex<Option<SocketAddr>>,
+    /// 客户端声明的协议类型（保活包要带上）
+    pub(crate) protocol: Mutex<ProtocolType>,
     /// 是否已建立数据会话（之后迟到的 `initialise` 只转发）
     pub(crate) established: AtomicBool,
     pub(crate) created_at: i64,
@@ -105,6 +117,7 @@ impl HandshakeEntry {
             egress: Mutex::new(None),
             egress_socket: Mutex::new(None),
             target: Mutex::new(None),
+            protocol: Mutex::new(ProtocolType::NotCare),
             established: AtomicBool::new(false),
             created_at: now_secs(),
             tx,
@@ -119,6 +132,7 @@ impl HandshakeEntry {
 /// 两侧已建立的数据会话（对应 C++ 的 `kcp_mappings` 数据阶段）。
 pub(crate) struct RelaySession {
     pub(crate) conv: u32,
+    pub(crate) protocol: ProtocolType,
     /// 面向客户端
     pub(crate) ingress: Arc<KcpChannel>,
     /// 面向真实服务端
@@ -126,6 +140,11 @@ pub(crate) struct RelaySession {
     /// 与 `egress` 共用的独占 socket（会话任务负责接收）
     pub(crate) egress_socket: UdpEndpoint,
     closed: AtomicBool,
+    /// 最近一次向前转发数据帧的时刻（对应 C++ `last_data_transfer_time`）
+    last_data_transfer: AtomicI64,
+    /// 两侧保活的下一次发送时刻（Unix 秒）
+    ingress_next_keep_alive: AtomicI64,
+    egress_next_keep_alive: AtomicI64,
     /// listener 投递解密后的明文帧
     pub(crate) tx: mpsc::Sender<Vec<u8>>,
 }
@@ -133,28 +152,59 @@ pub(crate) struct RelaySession {
 impl RelaySession {
     pub(crate) fn new(
         conv: u32,
+        protocol: ProtocolType,
         ingress: Arc<KcpChannel>,
         egress: Arc<KcpChannel>,
         egress_socket: UdpEndpoint,
         tx: mpsc::Sender<Vec<u8>>,
     ) -> Self {
+        let now = now_secs();
         Self {
             conv,
+            protocol,
             ingress,
             egress,
             egress_socket,
             closed: AtomicBool::new(false),
+            last_data_transfer: AtomicI64::new(now),
+            ingress_next_keep_alive: AtomicI64::new(i64::MAX),
+            egress_next_keep_alive: AtomicI64::new(i64::MAX),
             tx,
         }
     }
 
-    /// 标记会话结束（由任一方向收到 `disconnect` / `failure` 时调用）。
+    /// 标记会话结束（维护任务判定空闲，或任一方向收到 `disconnect` / `failure`）。
     pub(crate) fn close(&self) {
         self.closed.store(true, Ordering::Relaxed);
     }
 
     pub(crate) fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Relaxed)
+    }
+
+    /// 记录一次数据转发（心跳与空闲判定用）。
+    pub(crate) fn mark_data_transfer(&self, at: i64) {
+        self.last_data_transfer.store(at, Ordering::Relaxed);
+    }
+
+    pub(crate) fn last_data_transfer(&self) -> i64 {
+        self.last_data_transfer.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn ingress_next_keep_alive(&self) -> i64 {
+        self.ingress_next_keep_alive.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn set_ingress_next_keep_alive(&self, at: i64) {
+        self.ingress_next_keep_alive.store(at, Ordering::Relaxed);
+    }
+
+    pub(crate) fn egress_next_keep_alive(&self) -> i64 {
+        self.egress_next_keep_alive.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn set_egress_next_keep_alive(&self, at: i64) {
+        self.egress_next_keep_alive.store(at, Ordering::Relaxed);
     }
 
     /// 客户端端口跳跃后更新回包目标（对应 C++ 每次收包更新 `ingress_source_endpoint`）。

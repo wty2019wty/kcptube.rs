@@ -874,9 +874,27 @@ async fn relay_tcp_roundtrip() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn relay_keep_alive_stays_connected() {
+    // keep_alive=1：relay 每秒向两侧各发一次保活，跨多个周期后连接应保持可用
+    let (client_port, tasks) = start_relay_pair(1).await;
+    let result = tokio::time::timeout(Duration::from_secs(30), async {
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", client_port))
+            .await
+            .unwrap();
+        let (mut reader, mut writer) = stream.split();
+        exchange(&mut reader, &mut writer, "before idle", 1).await;
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        exchange(&mut reader, &mut writer, "after idle", 1).await;
+    })
+    .await;
+
+    stop(tasks);
+    result.expect("跨多个保活周期后 relay 连接应保持可用");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn relay_udp_roundtrip() {
     let (client_port, tasks) = start_relay_pair(0).await;
-
     let result = tokio::time::timeout(Duration::from_secs(20), async {
         let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
         socket.connect(("127.0.0.1", client_port)).await.unwrap();

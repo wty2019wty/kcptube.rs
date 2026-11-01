@@ -21,8 +21,8 @@ use crate::util::{is_continuous, random_pick};
 use kcptube_kcp::KcpConfig;
 use kcptube_protocol::constant::{HANDSHAKE_TIMEOUT, KCP_CLEANUP_WAITS, PACKET_LENGTH};
 use kcptube_protocol::packet::{
-    Feature, SettingsWrapper, create_keep_alive_response_packet, create_test_connection_packet,
-    unpack_inner,
+    Feature, ProtocolType, SettingsWrapper, create_keep_alive_response_packet,
+    create_test_connection_packet, unpack_inner,
 };
 use kcptube_transport::{
     KcpChannel, MAX_INNER_MESSAGE, UdpEndpoint, now_ms, now_secs, open_handshake_channel,
@@ -140,9 +140,10 @@ impl RelayState {
                 Err(error) if is_drained(&error) => break,
                 Err(error) => return Err(error.into()),
             };
-            let (feature, _protocol, _) = unpack_inner(&inner[..size])?;
+            let (feature, protocol, _) = unpack_inner(&inner[..size])?;
             match feature {
                 Feature::Initialise => {
+                    *entry.protocol.lock().await = protocol;
                     self.forward_initialise(entry, &inner[..size], size).await?;
                 }
                 Feature::KeepAlive => {
@@ -338,7 +339,9 @@ impl RelayState {
                     entry.ingress.send(&packet).await?;
                     entry.ingress.update(now_ms()).await?;
 
-                    self.create_session(entry.clone(), settings.uid).await?;
+                    let protocol = *entry.protocol.lock().await;
+                    self.create_session(entry.clone(), settings.uid, protocol)
+                        .await?;
                     entry.established.store(true, Ordering::SeqCst);
                 }
                 Feature::KeepAlive => {
@@ -366,6 +369,7 @@ impl RelayState {
         self: &Arc<Self>,
         entry: Arc<HandshakeEntry>,
         conv: u32,
+        protocol: ProtocolType,
     ) -> Result<(), RelayError> {
         if self.session(conv).await.is_some() {
             return Ok(());
@@ -423,7 +427,14 @@ impl RelayState {
             .await;
 
         let (tx, rx) = mpsc::channel(1024);
-        let session = Arc::new(RelaySession::new(conv, ingress, egress, egress_socket, tx));
+        let session = Arc::new(RelaySession::new(
+            conv,
+            protocol,
+            ingress,
+            egress,
+            egress_socket,
+            tx,
+        ));
         self.sessions.lock().await.insert(conv, session.clone());
 
         let state = self.clone();

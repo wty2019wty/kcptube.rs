@@ -28,9 +28,11 @@ pub(crate) async fn run_listener(
         };
 
         let datagram = &buffer[..size];
+        state.listener_counters.add_ingress_raw(size);
         let Ok((_, plain)) = state.ingress_codec.open_frame(datagram) else {
             continue;
         };
+        state.listener_counters.add_ingress_inner(plain.len());
         let Ok(frame) = parse_frame(&plain, state.ingress_fec_original) else {
             continue;
         };
