@@ -353,6 +353,7 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 | 2026-11-01 | **M4 完成（自定义映射）**：客户端在 `ignore_listen_*` 下按 `[custom_input*]` 逐条监听并随 `request_initialise_packet_with_address` 下发目标；mux 模式发 `pre_connect_custom_address`；服务端 `ignore_destination_*` 生效，mux 握手不再要求 `destination_*`。新增 4 个自定义映射 interop 测试、100 并发 mux TCP 验收测试、进程内丢包代理下的 FEC 端到端测试，以及 3 个客户端监听项单元测试；测试增至 106，已知问题 #7 关闭 |
 | 2026-11-01 | refactor: 拆分三个 1000+ 行源文件（纯移动、行为不变）——`kcp/src/lib.rs` 1354 → 204 行，拆为 `api`/`send`/`recv`/`ack`/`timer`/`tests`；`client/src/lib.rs` 1541 → 212 行，拆为 `listen`/`state`/`handshake`/`tcp`/`udp`/`mux`/`port_hop`/`util`；`server/src/lib.rs` 1300 → 145 行，拆为 `state`/`socket`/`handshake`/`data`/`relay`/`mux`/`status`/`util`。所有单元测试、C++ 对撞向量与 13 个 interop 测试保持通过 |
 | 2026-11-01 | docs: 新增 [`refactor-backlog.md`](refactor-backlog.md)：记录跨模块重复审计（完全重复 5 类、结构性重复 3 类、未接入/死 API 清单）、与 C++ 原版逐项对照，以及阶段 1–5 的优化路线与决策（`KcpUpdater` 接入、config→kcp 依赖、`WaitQueue` 保留） |
+| 2026-11-01 | docs: 新增 [`relay-plan.md`](relay-plan.md)：拆解 C++ `relay.cpp` 的握手/数据/清理/端口跳跃行为，给出 Rust 侧模块划分、任务模型、与 C++ 的对齐清单、R0–R5 分步实施与测试计划，并登记 C++ 上游的 4 处复制粘贴缺陷（Rust 侧有意偏离） |
 
 ---
 
