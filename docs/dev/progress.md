@@ -2,7 +2,7 @@
 
 > 最后更新：2026-11-01
 > 分支：`rs-dev`　基线提交：`a0d7164`（legacy-cpp 迁移 + .gitignore）
-> 计划文档：[`docs/migration-plan.md`](migration-plan.md)
+> 计划文档：[`docs/dev/migration-plan.md`](migration-plan.md)
 
 ---
 
@@ -350,7 +350,7 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 | 2026-10-31 | **M4 端口跳跃与默认参数**：服务端监听完整端口范围并共享会话表，按来源自动重绑；客户端 `dport_refresh` 探测与切换 socket、随机目标选择、只监听首个端口；接入 `blast`、带宽 `SetBandwidth` / `ResetWindowValues`、`ipv4_only` / `ipv6_only`；新增通道重绑、blast、带宽、地址族与 `port_hopping_keeps_connection` 测试；测试增至 96；STUN/DDNS 调整为 M6 |
 | 2026-10-31 | **C++ 互通验证**：Rust 客户端→C++ 服务端（TCP/UDP）均跨越 2 次跳跃持续收发；C++ 客户端→Rust 服务端 UDP 跨越跳跃持续收发。期间修复服务端握手通道把 `test_connection` 错回为 `keep_alive_response` 的兼容性问题；记录 C++ 端口跳跃仅覆盖 UDP/mux 且由空闲超时触发的语义差异 |
 | 2026-10-31 | 版本号显示方式：`--version` 改用 crate 版本（`APP_DISPLAY_VERSION`），与协议兼容目标版本 `APP_VERSION` 区分；提取 `print_version_banner` 统一横幅输出并注明须与 C++ 逐字一致；已知问题登记 #10 |
-| 2026-10-31 | 版本号统一：启动横幅、usage 与 `--version` 全部使用根 `Cargo.toml` 的 `version`（`0.1.0`），删除 `APP_VERSION` 常量，程序只对外自报一个版本号；横幅不再与 C++ 版逐字一致，协议兼容目标仍记录在 `docs/migration-plan.md`；已知问题 #10 关闭 |
+| 2026-10-31 | 版本号统一：启动横幅、usage 与 `--version` 全部使用根 `Cargo.toml` 的 `version`（`0.1.0`），删除 `APP_VERSION` 常量，程序只对外自报一个版本号；横幅不再与 C++ 版逐字一致，协议兼容目标仍记录在 `docs/dev/migration-plan.md`；已知问题 #10 关闭 |
 | 2026-10-31 | docs: 新增使用文档全套（`docs/README.md` 索引、`parameters.md` 参数手册、`client-server.md`、`relay-mode.md`、`fec.md`、`mtu.md`、`custom-ip-mappings.md`、`specific-examples.md`），参照 `legacy-cpp/docs/` 篇目结构、基于 Rust 代码实际行为编写；校准 KCP 预设值（fast1/fast2 `kcp_interval=0`）、`kcp_mtu` 默认值（1418/1405）、带宽后缀与 `/8` 换算怪癖、`{}` 忽略语法、relay 段继承规则等与 C++ 对齐的细节；对 `--try`、relay 运行期、`[custom_input*]` 转发、STUN/DDNS、`fib_*` 等未实现项逐一标注；根 `README.md` 文档导航同步更新 |
 | 2026-10-31 | docs: 按代码行为校正文档与注释：`mtu` 优先于 `kcp_mtu`、`listen_on` 仅接受 IP、多配置文件为顺序启动（登记已知问题 #13）、默认仅监听 IPv4（#12）、`ip_address.log` 尚未接入、端口范围含两端；修正 `cipher.rs` 校验字节序注释与过时提示文案；非空行数更新为 9,919 |
 | 2026-10-31 | test: 稳定 interop 测试：端口改为进程内统一分配（同一端口同时校验 TCP/UDP、避开常见临时端口段，覆盖 echo/server/client/端口跳跃范围），并让服务端先于客户端启动，消除 mux 启动握手与 UDP 端口尚未监听的竞态；连续 50 次运行 0 失败 |
@@ -371,6 +371,7 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 | 2026-11-01 | **feat: relay R3**：`transport` 下沉 `drain_old_socket` 供 client/relay 共用；新增 `relay/port_hop` —— 每次成功转发后按 `[forwarder].dport_refresh` 检查并后台探测，成功后立即 rebind 并替换 egress socket，旧 socket 继续收 2 秒；`RelaySession` 的 `egress_socket` 改为可替换并新增 `hopping_at` / `hopping_testing`；与 C++ 的两处有意偏离（失败重试、一步切换）见 `relay-plan.md`；新增 `relay_port_hopping_keeps_connection`，测试增至 133 |
 | 2026-11-01 | **test: relay R4**：`start_relay_pair` 增加 `RelayPairOptions`（`mux_tunnels` / `fec`），新增 4 个端到端用例——mux 双隧道 TCP+UDP、20 并发 mux TCP、两段 FEC 32 KiB、客户端 `[custom_input]` + 服务端 `ignore_destination_*`（验证 `user_input` 目标经 relay 原样透传）；relay 本体无需改动，测试增至 137 |
 | 2026-11-01 | **feat: R5 `--try`**：新增 `crates/tester`（`kcptube-tester`）——对「每个目标地址 × 每个端口」并发建立 conv 0 通道、发送 `test_connection`、30 秒超时；client 取根配置、relay 取 `[forwarder]` 段；输出与 C++ `PrintResults` 逐字一致；`main` 的 `--try` 分支接入；与 C++ 的差异：地址解析失败记为全部失败并继续（C++ 中止整个测试）；新增 3 个单元测试与 2 个集成测试，已知问题 #2 关闭，测试增至 142 |
+| 2026-11-01 | docs: 使用文档与开发者文档分开放——`docs/` 仅保留面向使用者的文档（`README.md` 首页、`parameters.md`、`client-server.md`、`relay-mode.md`、`fec.md`、`mtu.md`、`custom-ip-mappings.md`、`specific-examples.md`）；本文件与 `migration-plan.md` / `refactor-backlog.md` / `relay-plan.md` 移入 `docs/dev/`，新增 [`docs/dev/README.md`](README.md) 开发文档索引；同步更新根 `README.md`、`AGENTS.md`、`docs/README.md`、`docs/client-server.md` 及源码注释中的路径引用，全部相对链接校验通过 |
 
 ---
 

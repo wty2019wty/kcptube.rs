@@ -28,7 +28,7 @@ use std::path::PathBuf;
 ///
 /// 启动横幅、usage 与 `--version` 全部使用它，程序只对外自报一个版本号。
 /// 注意：与 C++ 版横幅的 `20260329`（协议兼容目标版本）不再逐字一致，
-/// 需要识别兼容目标时以 `docs/migration-plan.md` 的锁定版本为准。
+/// 需要识别兼容目标时以 `docs/dev/migration-plan.md` 的锁定版本为准。
 const APP_DISPLAY_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Parser, Debug)]

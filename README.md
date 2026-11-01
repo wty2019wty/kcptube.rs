@@ -30,10 +30,12 @@
 - [FEC 使用介绍](docs/fec.md)、[MTU 设置](docs/mtu.md)
 - [自定义映射](docs/custom-ip-mappings.md)、[具体示例](docs/specific-examples.md)
 
-开发者文档：
+开发者文档（`docs/dev/`，与使用文档分开放）：
 
-- [移植计划](docs/migration-plan.md)：目标、架构、阶段划分、协议关键事实、风险登记
-- [移植进度](docs/progress.md)：当前状态、测试统计、已知问题、下一步
+- [开发文档首页](docs/dev/README.md)
+- [移植计划](docs/dev/migration-plan.md)：目标、架构、阶段划分、协议关键事实、风险登记
+- [移植进度](docs/dev/progress.md)：当前状态、测试统计、已知问题、下一步
+- [优化与去重路线](docs/dev/refactor-backlog.md)、[relay 实施方案](docs/dev/relay-plan.md)
 
 上游 C++ 版使用文档（仅供参考，行为以本仓库文档为准）：[`legacy-cpp/docs/`](legacy-cpp/docs)
 
@@ -53,7 +55,8 @@ crates/
   relay/       中继模式
   kcptube/     可执行程序入口
 legacy-cpp/    原 C++ 实现（协议参考，勿直接修改）
-docs/          使用文档 + 移植计划/进度
+docs/          用户使用文档（入口 docs/README.md）
+docs/dev/      开发者文档：移植计划、进度、重构与 relay 方案
 ```
 
 ## 构建与测试

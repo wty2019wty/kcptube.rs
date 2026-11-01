@@ -13,7 +13,7 @@
 //!
 //! 与 C++ 的差异：C++ 把 ingress 的 `fec recover` 误写成
 //! `forwarder_status_counters.fec_recovery_count`（`relay.cpp:2017`），
-//! Rust 用各段自己的计数器（已登记在 `docs/relay-plan.md` §2.9）。
+//! Rust 用各段自己的计数器（已登记在 `docs/dev/relay-plan.md` §2.9）。
 
 use crate::state::{HandshakeEntry, RelaySession, RelayState};
 use kcptube_logging::{

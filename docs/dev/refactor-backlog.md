@@ -79,7 +79,7 @@ C++ 原版同样冗余，且是「按 mode 复制」：
 
 1. **行为不变优先**：阶段 1–3 是等价重构，不改变线格式、超时、日志文本。
 2. **每阶段独立可回滚**，按 AGENTS.md 的提交信息格式单独提交。
-3. **以 C++ 为基准**：纯抽取不改变语义；有意偏离登记到 `docs/progress.md`。
+3. **以 C++ 为基准**：纯抽取不改变语义；有意偏离登记到 `docs/dev/progress.md`。
 4. **不动的部分**：
    - `protocol/src/packet.rs` 各包层编解码（逐字段对应 C++ packed struct）；
    - `config/src/parser.rs` 的解析分支（逐行对应 C++ 函数）；
@@ -171,7 +171,7 @@ relay 会改变流量模型，等形态固定后再测量更可靠。
 ### 阶段 3：死代码清理与偏差登记（预估 0.5–1 天，低风险）
 
 - [ ] 清理 2.3 表中「纯 Rust 侧未使用」的项；
-- [ ] `KcpUpdater` / `wait_queue_*`：暂不删除，在 `docs/progress.md` 明确标注
+- [ ] `KcpUpdater` / `wait_queue_*`：暂不删除，在 `docs/dev/progress.md` 明确标注
       「已实现未接入」/「有意偏离」；
 - [ ] 确认 `protocol` 与 `fec` 的可删除项（先跑对撞测试）。
 

@@ -12,7 +12,7 @@
 
 - 原项目 KCP Tube 是 C++20 实现，网络层基于 asio，加密/FEC 依赖 Botan3，共约 **14.3k 行**（含第三方 ikcp 1.1k 行）。
 - 本仓库将其完整保留在 `legacy-cpp/`，作为协议参考与互通测试基准。
-- Rust 侧已建立 workspace（11 个 crate：10 个 lib + 1 个 bin），详见 `docs/progress.md`。
+- Rust 侧已建立 workspace（11 个 crate：10 个 lib + 1 个 bin），详见 `docs/dev/progress.md`。
 
 ### 1.2 目标
 
@@ -484,7 +484,7 @@ CI（`.github/workflows/rust.yml`）在 ubuntu 与 windows 上执行上述命令
 
 ### 9.4 文档
 
-- 每完成一个任务，更新 `docs/progress.md` 的状态表与变更记录。
+- 每完成一个任务，更新 `docs/dev/progress.md` 的状态表与变更记录。
 - 协议相关的新发现必须先写进本文档第 5 节，再改代码。
 
 ---
@@ -493,8 +493,8 @@ CI（`.github/workflows/rust.yml`）在 ubuntu 与 windows 上执行上述命令
 
 | 文档 | 内容 | 更新时机 |
 |---|---|---|
-| `docs/migration-plan.md`（本文） | 目标、架构、阶段、协议事实 | 范围或协议理解变化时 |
-| `docs/progress.md` | 当前状态、测试数、已知问题 | 每次提交/里程碑 |
+| `docs/dev/migration-plan.md`（本文） | 目标、架构、阶段、协议事实 | 范围或协议理解变化时 |
+| `docs/dev/progress.md` | 当前状态、测试数、已知问题 | 每次提交/里程碑 |
 | `README.md` | 对外说明 | 里程碑发布时 |
 | `legacy-cpp/docs/` | 上游使用文档（只读） | 不修改 |
 

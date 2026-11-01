@@ -35,7 +35,7 @@
 `kcptube config.conf`
 或
 `kcptube config1.conf config2.conf`
-如果有多个文件，可以接着补充。程序会依次启动各配置文件；当前版本中客户端/服务端模式为常驻运行，因此第一个常驻的配置文件会独占进程，后面的配置文件要等它退出后才会启动（C++ 版是并发运行，此处存在差异，见[移植进度](progress.md)已知问题）。
+如果有多个文件，可以接着补充。程序会依次启动各配置文件；当前版本中客户端/服务端模式为常驻运行，因此第一个常驻的配置文件会独占进程，后面的配置文件要等它退出后才会启动（C++ 版是并发运行，此处存在差异，见[移植进度](dev/progress.md)已知问题）。
 
 #### 验证配置文件
 使用 ``--check-config`` 选项即可验证配置文件是否正确：
@@ -90,7 +90,7 @@ Rust 版只对外自报一个版本号，来源是根 `Cargo.toml` 里声明的 
 
 - 运行横幅、usage 与 `--version` 三处输出一致（当前为 `kcptube version 0.1.0`）；
 - 该号码是 Rust 重写版自身的发布版本，**不是**对 C++ 版的协议兼容目标版本；
-- 兼容目标（`20260329`）记录在 `docs/migration-plan.md`，不再通过横幅显示，因此与 C++ 版横幅不再逐字一致。
+- 兼容目标（`20260329`）记录在 `docs/dev/migration-plan.md`，不再通过横幅显示，因此与 C++ 版横幅不再逐字一致。
 
 #### 客户端与服务端模式示例
 请前往[常规配置](client-server.md)介绍页面
@@ -123,7 +123,16 @@ Rust 版只对外自报一个版本号，来源是根 `Cargo.toml` 里声明的 
 | [自定义映射](custom-ip-mappings.md) | `[custom_input*]` 映射规则（TCP / UDP / mux 均已接入） |
 | [具体示例](specific-examples.md) | OpenVPN、HTTP、Shadowsocks、游戏等场景示例 |
 
-移植计划、进度与已知问题见开发者文档：[移植计划](migration-plan.md)、[移植进度](progress.md)、[优化与去重路线](refactor-backlog.md)、[relay 实施方案](relay-plan.md)。
+## 开发者文档
+
+本目录（`docs/`）只放**用户使用文档**；移植计划、进度与内部设计放在独立的 [`docs/dev/`](dev/README.md)：
+
+| 文档 | 内容 |
+|---|---|
+| [移植计划](dev/migration-plan.md) | 目标、架构、阶段划分、协议关键事实、风险登记 |
+| [移植进度](dev/progress.md) | 当前状态、测试统计、已知问题、下一步、变更记录 |
+| [优化与去重路线](dev/refactor-backlog.md) | 跨模块重复审计与阶段 1–5 的优化决策 |
+| [relay 实施方案](dev/relay-plan.md) | C++ `relay.cpp` 行为拆解与 R0–R5 实施记录 |
 
 ## 配置文件生成器
 
