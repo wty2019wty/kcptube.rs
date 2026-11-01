@@ -11,7 +11,7 @@
 | 指标 | 数值 |
 |---|---|
 | C++ 参考实现 | 14,308 行（`legacy-cpp/`，含 ikcp 1,109 行） |
-| Rust 代码 | 约 10,800 行（22 个源文件，非空行） |
+| Rust 代码 | 14,114 行（55 个源文件，非空行，含 `#[cfg(test)]` 模块） |
 | crate 数 | 12（11 个 lib + 1 个 bin） |
 | 单元/集成测试 | 149 个，全部通过 |
 | 整体完成度 | **M0~M4 完成，M5 进行中** |
@@ -376,6 +376,7 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 | 2026-11-01 | docs: 使用文档与开发者文档分开放——`docs/` 仅保留面向使用者的文档（`README.md` 首页、`parameters.md`、`client-server.md`、`relay-mode.md`、`fec.md`、`mtu.md`、`custom-ip-mappings.md`、`specific-examples.md`）；本文件与 `migration-plan.md` / `refactor-backlog.md` / `relay-plan.md` 移入 `docs/dev/`，新增 [`docs/dev/README.md`](README.md) 开发文档索引；同步更新根 `README.md`、`AGENTS.md`、`docs/README.md`、`docs/client-server.md` 及源码注释中的路径引用，全部相对链接校验通过 |
 | 2026-11-01 | **fix（relay 代码验证收尾）**：① 保活——`RelaySession` 建会话时把两侧 `next_keep_alive` 初始化为当前时刻；此前一直为 `i64::MAX`，`send_keep_alive_if_due` 永远提前返回，relay 实际从不主动保活。新增 `scheduled_keep_alive_is_actually_sent`。② `disconnect` / `failure`——改为先记 `now + KEEPALIVE_TIMEOUT`（31 秒）再关闭，会话任务再保留 4 秒冲刷，对齐 C++ `expiring_kcp`；新增 `disconnect_expiry_waits_for_scheduled_time`。③ 目标解析失败或无法建立出口通道时向客户端回 `inform_error_packet`，不再干等 30 秒握手超时；新增 `relay_unreachable_target_reports_failure`。④ 新增 `relay_client_port_hopping_keeps_connection`（4 个 relay 端口，读取客户端日志确认确实跳跃）与 `initialise` 端口范围/带宽改写单测；修正 `relay-plan.md` §2.3/§2.5/§7.1 与过时模块注释。测试增至 149 |
 | 2026-11-01 | **T4 / T10 验收完成**：`scripts/verify-t10-relay-interop.ps1` 用桌面 C++ `20260329` 原版跑通 `core`（C++ client → Rust relay → C++ server）、`fec`、`mux` 与 `reverse`（Rust client → C++ relay → Rust server）；`scripts/verify-t4-relay-keepalive.ps1` 在客户端 `keep_alive=0`、relay `keep_alive=1` 下空闲 **300 秒**后 TCP/UDP 仍通，已知问题 #1、#14 关闭。新增 `scripts/build-legacy-mingw.ps1`、`net_echo.py`、`net_probe.py` 与两份验收脚本。同步登记 C++ relay 的两个限制（`[listener]` 段 `listen_on` 崩溃、`relay.cpp:1369` egress 误用 ingress 加密参数） |
+| 2026-11-01 | docs: 按代码现状校准文档瑕疵——`docs/README.md` 的模式列表与状态表统一为「中继模式可用」；`relay-mode.md` 状态行更新为已完成 C++ T10 四个场景的互通验收；`migration-plan.md` crate 数改为 12（11 lib + 1 bin）、勾选 M5 的 relay/tester 与 Linux 构建、把「静态链接」拆为未完成项、补充端到端矩阵的口径说明；`refactor-backlog.md` 阶段 5 的空闲清理按 R2 的实际落地更新；`relay-plan.md` 统一 `relay.cpp` 行数口径并修正 relay 保活的实际实现（自管 `next_keep_alive`，未复用 `transport::KeepAlive`）；根 `README.md` 目录结构补 `tester/`；`progress.md` 代码量更新为 55 个源文件 / 14,114 行（测试仍为 149，`cargo test --workspace` 实跑复核） |
 
 ---
 

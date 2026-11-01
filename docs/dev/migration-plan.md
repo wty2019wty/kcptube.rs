@@ -1,6 +1,6 @@
 # kcptube Rust 移植计划
 
-> 状态：v1 草案（2026-10-31）
+> 状态：v2（2026-11-01 按代码现状校准；M0–M4 已完成，M5 进行中）
 > 适用分支：`rs-dev`
 > 参考实现：`legacy-cpp/`（C++ 版，`app_version = 20260329`）
 
@@ -12,7 +12,7 @@
 
 - 原项目 KCP Tube 是 C++20 实现，网络层基于 asio，加密/FEC 依赖 Botan3，共约 **14.3k 行**（含第三方 ikcp 1.1k 行）。
 - 本仓库将其完整保留在 `legacy-cpp/`，作为协议参考与互通测试基准。
-- Rust 侧已建立 workspace（11 个 crate：10 个 lib + 1 个 bin），详见 `docs/dev/progress.md`。
+- Rust 侧已建立 workspace（12 个 crate：11 个 lib + 1 个 bin），详见 `docs/dev/progress.md`。
 
 ### 1.2 目标
 
@@ -61,7 +61,7 @@
 | 文件 | 行数 | 职责 | Rust 目标 crate | 难度 | 阶段 |
 |---|---:|---|---|---|---|
 | `modes/client.cpp` | 1917 | 客户端主逻辑：监听、握手、端口跳跃、状态日志 | `kcptube-client` | 高 | M3/M4 |
-| `modes/relay.cpp` | 1802 | 中继：ingress/egress 双段 | `kcptube-relay` | 高 | M5 |
+| `modes/relay.cpp` | 1802 | 中继：ingress/egress 双段 | `kcptube-relay` | 高 | M5（已完成） |
 | `modes/server.cpp` | 1323 | 服务端：握手、转发、STUN、DDNS | `kcptube-server` | 高 | M3/M4/M6 |
 | `networks/connections.cpp` | 1294 | asio 会话封装、包编解码、字节序 | `kcptube-protocol` + `kcptube-transport` | 中 | M1/M2 |
 | `shares/configurations.cpp` | 1010 | `.conf` 解析、参数校验、预设展开 | `kcptube-config` | 中 | M1 |
@@ -69,7 +69,7 @@
 | `shares/data_operations.cpp` | 642 | 加密调度、FEC 容器、xor 差分 | `kcptube-crypto` + `kcptube-fec` | 中 | M1 |
 | `networks/connections.hpp` | 621 | 会话类定义、包结构体 | 同上 | 中 | M1/M2 |
 | `shares/aead.hpp` | 471 | 4 种 AEAD 实现、IV 派生 | `kcptube-crypto` | 中 | M1 |
-| `modes/tester.cpp` | 392 | `--try` 连通性测试 | `kcptube-tester`（已建立） | 中 | M5 |
+| `modes/tester.cpp` | 392 | `--try` 连通性测试 | `kcptube-tester` | 中 | M5（已完成） |
 | `networks/kcp.cpp` | 292 | ikcp 的 C++ 包装 | `kcptube-kcp` | 低 | M2 |
 | `networks/dns_helper.cpp` | 288 | DNS TXT 查询（Windows DnsQuery / resolv） | `kcptube-transport` | 中 | M6 |
 | `shares/share_defines.cpp` | 237 | 参数工具、日志、ZFEC 初始化 | `kcptube-config` / `kcptube-logging` / `kcptube-fec` | 低 | M1 |
@@ -361,23 +361,24 @@ KCP 本体（ikcp）是标准大端格式。
 
 ---
 
-### M5 relay / tester / 跨平台 / 性能（约 9~13 人日）
+### M5 relay / tester / 跨平台 / 性能（进行中：relay 与 tester 已完成）
 
 任务：
 
-- [ ] **relay**：`[listener]` / `[forwarder]` 双段配置与转发
-- [ ] **tester**：`--try` 连通性测试（延时、丢包统计与输出格式）
+- [x] **relay**：`[listener]` / `[forwarder]` 双段配置与转发（2026-11-01 完成，含空闲回收、两侧保活、egress 端口跳跃，已过 T4/T10 人工验收）
+- [x] **tester**：`--try` 连通性测试（延时、丢包统计与输出格式，2026-11-01 完成）
 - [ ] **平台**：FreeBSD `SO_SETFIB`
-- [ ] **平台**：Linux 构建与静态链接
+- [x] **平台**：Linux 构建（CI `ubuntu-latest` 已覆盖构建与测试）
+- [ ] **平台**：静态链接落地为脚本/CI 产物（当前仅根 `README.md` 的手动 `cargo zigbuild` 命令）
 - [ ] **性能**：基准测试（吞吐、P99 延迟、内存），与 C++ 版对比
 - [ ] **性能**：必要优化（零拷贝、批量收发、`SO_REUSEPORT`）
 - [ ] **发布**：交叉编译脚本、GitHub Release、Docker 镜像
 
 验收：
 
-- 三种模式全部可用
-- 性能达到 C++ 版的 80% 以上（延迟不劣化）
-- 至少 Windows + Linux 双平台 CI 绿
+- [x] 三种模式全部可用
+- [ ] 性能达到 C++ 版的 80% 以上（延迟不劣化）
+- [x] 至少 Windows + Linux 双平台 CI 绿
 
 ---
 
@@ -424,6 +425,9 @@ cmake -S legacy-cpp -B build/legacy -G Ninja && cmake --build build/legacy
 约定：向量文件放在各 crate 的 `tests/` 或 `#[cfg(test)]` 模块内，注明生成时间与 C++ 版本。
 
 ### 7.3 端到端测试矩阵
+
+> 下表是互通验证的目标组合；已经落地的自动化用例与人工验收记录以
+> [`progress.md`](progress.md) 第 4 节及各里程碑的勾选项为准。
 
 | # | 客户端 | 服务端 | 协议 | 加密 | FEC | mux | 端口跳跃 |
 |---|---|---|---|---|---|---|---|

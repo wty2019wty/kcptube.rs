@@ -9,12 +9,15 @@
   原样塞进另一端的 KCP 重新分段。因此 Rust 侧**不需要**复用 client/server 的转发逻辑，
   真正要复用的只有 `KcpChannel`、配置映射、日志与保活/清理规则。
 - `KcpChannel` 已经封装了「KCP + 加解密 + FEC + 可换 socket/对端」，恰好覆盖 relay 两个方向的全部需求；
-  relay 落地后会顺带让目前被认为「未使用」的 `keep_alive_send_time` / `keep_alive_response_time` 变成生产代码。
+  实际落地时两侧保活由 `relay/maintenance.rs::tick_keep_alive` 按 `RelaySession` 自管的
+  `ingress_next_keep_alive` / `egress_next_keep_alive` 独立调度（未复用 `transport::KeepAlive`，
+  因为两侧间隔不同、且会话是共享的 `Arc`）；`KcpChannel` 上的 `keep_alive_send_time` /
+  `keep_alive_response_time` 会被发送与响应路径写入，但目前没有生产代码读取，属于「只写不读」字段。
 - 最大的实现难点不是转发，而是**握手改写**：relay 要在两个握手通道之间来回改写 `initialise`
   负载（带宽夹取、端口范围替换），并把服务端分配的 `uid` 透传给客户端。
 - 建议分 5 步交付（relay 本体 R1–R4，`--try` 为 R5），每步都能单独跑通测试；STUN/DDNS 属于 M6，不混进来。
 
-## 2. C++ 参考实现拆解（`legacy-cpp/src/modes/relay.cpp`，2058 行）
+## 2. C++ 参考实现拆解（`legacy-cpp/src/modes/relay.cpp`，共 2058 行 / 非空 1802 行）
 
 ### 2.1 数据模型
 
@@ -160,7 +163,7 @@ R1–R4 只保留接口位，不实现行为。
 |---|---|---|
 | KCP + 加解密 + FEC + 换 socket/对端 | `crates/transport/src/channel.rs` | 两侧各一个 `Arc<KcpChannel>` 即可 |
 | 握手通道建立（独占 socket） | `transport::open_handshake_channel` | egress 侧握手 |
-| 保活发送 | `transport::KeepAlive`（`new` / `tick_at`） | 两侧独立保活 |
+| 保活发送 | `transport::KeepAlive`（`new` / `tick_at`） | 设计预期；**最终未复用**：relay 在 `maintenance.rs::tick_keep_alive` 中按两侧各自的 `next_keep_alive` 调度 |
 | 端口探测与重绑 | `transport::PortHop` | R3 的 egress 跳跃 |
 | 帧解析与时间窗 | `transport::PacketCodec::{open_frame, seal}`、`parse_frame`、`IncomingFrame::conv()` | 与 `server/src/socket.rs` 同一套 demux 写法 |
 | 目标解析 | `transport::resolve_endpoints_filtered` | 支持 IP 字面量与域名、地址族过滤 |
@@ -373,7 +376,7 @@ async fn drain_and_forward(from: &KcpChannel, to: &KcpChannel, session: &RelaySe
 | 步骤 | 内容 | 预估 | 验收 |
 |---|---|---|---|
 | **R0** | 阶段 1 公共层（`kcp_config` / `fec_parameters` / `set_rx_minrto` / `apply_*_tuning` / `wildcard_addr` / `log_warning` / 状态摘要格式化） | ✅ 已完成 | 见 `refactor-backlog.md` 阶段 1 |
-| **R0.5** | 阶段 5 前置（`PortHop` / `KeepAlive` / `open_handshake_channel`） | ✅ 已完成 | 见 `refactor-backlog.md` 阶段 5；空闲清理随 R2 |
+| **R0.5** | 阶段 5 前置（`PortHop` / `KeepAlive` / `open_handshake_channel`） | ✅ 已完成 | 见 `refactor-backlog.md` 阶段 5；空闲清理已在 R2 随 `relay/maintenance.rs` 落地 |
 | **R1** | relay 骨架：`Relay::new(root, ingress, egress)`、监听绑定、单 listener demux、握手中继、数据会话、双向转发、控制帧 | ✅ 已完成 | Rust client → relay → Rust server 的 TCP/UDP echo 通过 |
 | **R2** | 生命周期：握手/forwarder/会话清理、保活、状态日志、错误日志 | ✅ 已完成 | 空闲回收、`relay_keep_alive_stays_connected`；保活由 `scheduled_keep_alive_is_actually_sent` 直接验证 |
 | **R3** | 端口跳跃（relay 侧）+ 与客户端跳跃的联动 | ✅ 已完成 | `relay_port_hopping_keeps_connection`、`relay_client_port_hopping_keeps_connection` |

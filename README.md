@@ -53,6 +53,7 @@ crates/
   client/      客户端模式
   server/      服务端模式
   relay/       中继模式
+  tester/      --try 连通性测试
   kcptube/     可执行程序入口
 legacy-cpp/    原 C++ 实现（协议参考，勿直接修改）
 docs/          用户使用文档（入口 docs/README.md）

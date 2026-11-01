@@ -43,7 +43,7 @@
 | `KcpUpdater` 整个调度器 | `transport/src/lib.rs` | **Rust 未接入**；C++ 在 client/server/relay 中大量使用。计划阶段 4 接入，不直接删除 |
 | `Kcp::wait_queue_*` ×5 | `kcp/src/api.rs` | C++ 用于 TCP 背压；Rust 改用 `mpsc` 背压（`progress.md` 3.3 已登记差异），保留接口但暂不接入 |
 | `Kcp::update_check` | `kcp/src/timer.rs` | 未使用；与 `refresh` 二选一，确认后清理 |
-| `KcpChannel::{keep_alive_send_time, keep_alive_response_time, fec_enabled, recv_and_process}` | `transport/src/channel.rs` | 纯 Rust 侧未使用，可直接清理 |
+| `KcpChannel::{keep_alive_send_time, keep_alive_response_time}`（getter）、`fec_enabled`、`recv_and_process` | `transport/src/channel.rs` | 两个 getter 没有生产读取者（`keep_alive_send_time` 仅被 relay 单测读取）；同名字段与 `mark_keep_alive_*` 由 client/server/relay/mux 的生产路径写入，**不可删字段**；`fec_enabled` / `recv_and_process` 可直接清理 |
 | `transport::resolve_endpoint` | `transport/src/lib.rs` | 未使用；`resolve_endpoints_filtered` 已覆盖 |
 | `MuxTunnel::record_count`、`UdpEndpoint::as_socket/from_socket` | `transport/src/{mux,udp}.rs` | 未使用 |
 | `StatusCounters::add_egress_raw` | `logging/src/lib.rs` | 未使用 |
@@ -199,7 +199,7 @@ relay 会改变流量模型，等形态固定后再测量更可靠。
 
 **验收**：空闲 CPU / 唤醒次数有可量化下降；功能测试与 C++ 互通不回退。
 
-### 阶段 5：relay 移植前置（部分完成，2026-11-01）
+### 阶段 5：relay 移植前置（已完成，2026-11-01）
 
 C++ `relay.cpp` 是 client 逻辑的翻版（内部还有 `via_listener` / `via_forwarder` 双份），
 因此先泛化再移植：
@@ -212,12 +212,12 @@ C++ `relay.cpp` 是 client 逻辑的翻版（内部还有 `via_listener` / `via_
       存在 `DataSession` 里的服务端维护任务使用；client TCP/UDP、mux 隧道、服务端会话四处统一。
 - [x] 握手通道建立：`transport::open_handshake_channel`（独占 socket 场景），
       client 握手与端口探测共用；服务端共享监听 socket 的场景继续用 `KcpChannel::new_with_fec`。
-- [ ] 空闲清理抽出：**本轮未做**。server 与 relay 的回收规则不同（relay 按
-      `loop_find_expires` 的四条规则、并区分两侧保活时间），在没有 relay 实现前抽取
-      容易抽错方向；改为在 relay R2 中随维护任务一起落地并写单元测试。
-- [x] 再实现 relay（R1 完成，2026-11-01）：`crates/relay` 只保留本 mode 特有的
+- [x] 空闲清理：**未下沉到 `transport`，随 relay R2 在 `relay/maintenance.rs` 落地**。
+      server 与 relay 的回收规则不同（relay 按 `loop_find_expires` 的四条规则、并区分两侧
+      保活时间），强行抽一份公共实现会两边都不贴合；relay 侧已有空闲判定与延迟回收单元测试。
+- [x] 再实现 relay（R1–R5 已完成，2026-11-01）：`crates/relay` 只保留本 mode 特有的
       「握手改写 + 会话分派」，通道、端口探测、保活、握手通道建立全部复用 `transport`，
-      不含与 client 重复的状态机；R2–R4 继续。
+      不含与 client 重复的状态机；`--try` 由 `crates/tester` 承担。
 
 **验收**：relay 实现本身不再包含与 client 重复的状态机 —— R1 已满足。
 
@@ -239,7 +239,7 @@ C++ `relay.cpp` 是 client 逻辑的翻版（内部还有 `via_listener` / `via_
 | 2 结构性去重 | 待开始 | |
 | 3 死代码清理 | 待开始 | |
 | 4 性能优化 | 待开始 | 依赖 D1 |
-| 5 relay 前置 | ✅ 已完成（2026-11-01） | 端口跳跃、保活、握手通道已下沉；relay R1 已复用这些模块 |
+| 5 relay 前置 | ✅ 已完成（2026-11-01） | 端口跳跃、保活、握手通道已下沉；空闲清理按 relay 独有规则落在 R2；relay R1–R5 已完成 |
 
 ## 8. 变更记录
 
@@ -249,3 +249,4 @@ C++ `relay.cpp` 是 client 逻辑的翻版（内部还有 `via_listener` / `via_
 | 2026-11-01 | 完成阶段 1 公共层收口：`is_connection_reset` / `wildcard_addr` / `KcpChannel::{set_rx_minrto, apply_handshake_tuning, apply_data_tuning}` 下沉到 transport；`UserSettings::{kcp_config, fec_parameters}` 与 `KcpConfig::handshake` 下沉到 config/kcp；`log_warning` / `StatusSummary` + `print_status_summary` 下沉到 logging；删除 client/server 两份 `util.rs` 重复函数，5 处通道初始化改为调用助手；测试 106 → 115 |
 | 2026-11-01 | 完成阶段 5 的前三项（relay 前置）：新增 `transport::PortHop`（端口探测与重绑 IO，client 只留定时/选目标/日志）、`transport::KeepAlive`（client TCP/UDP、mux、服务端四处保活统一）、`transport::open_handshake_channel`（client 握手与端口探测共用）；空闲清理因 relay 判定规则不同，留到 relay R2；测试 115 → 118 |
 | 2026-11-01 | relay R1 落地并确认阶段 5 验收：relay 只保留握手改写与会话分派，通道/探测/保活/握手通道全部复用 `transport`，未复制 client 状态机；测试 118 → 126 |
+| 2026-11-01 | docs: 阶段 5 的空闲清理条目按 relay R2 的实际实现更新（未下沉 `transport`，在 `relay/maintenance.rs` 落地并有单元测试）；2.3 表按代码区分：`keep_alive_*_time` 的 getter 无生产读取者、字段与 `mark_keep_alive_*` 仍被生产写入（不可删），`fec_enabled` / `recv_and_process` 可直接清理 |
