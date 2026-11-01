@@ -361,7 +361,7 @@ async fn drain_and_forward(from: &KcpChannel, to: &KcpChannel, session: &RelaySe
 |---|---|---|---|
 | **R0** | 阶段 1 公共层（`kcp_config` / `fec_parameters` / `set_rx_minrto` / `apply_*_tuning` / `wildcard_addr` / `log_warning` / 状态摘要格式化） | ✅ 已完成 | 见 `refactor-backlog.md` 阶段 1 |
 | **R0.5** | 阶段 5 前置（`PortHop` / `KeepAlive` / `open_handshake_channel`） | ✅ 已完成 | 见 `refactor-backlog.md` 阶段 5；空闲清理随 R2 |
-| **R1** | relay 骨架：`Relay::new(root, ingress, egress)`、监听绑定、单 listener demux、握手中继、数据会话、双向转发、控制帧 | 2–3 天 | Rust client → relay → Rust server 的 TCP/UDP echo 通过 |
+| **R1** | relay 骨架：`Relay::new(root, ingress, egress)`、监听绑定、单 listener demux、握手中继、数据会话、双向转发、控制帧 | ✅ 已完成 | Rust client → relay → Rust server 的 TCP/UDP echo 通过 |
 | **R2** | 生命周期：握手/forwarder/会话清理、保活、状态日志、错误日志 | 1–2 天 | 空闲回收、`keep_alive` 用例通过 |
 | **R3** | 端口跳跃（relay 侧）+ 与客户端跳跃的联动 | 1–2 天 | 小 `dport_refresh` 下长连接不断 |
 | **R4** | mux / 自定义映射 / 多目标地址透传验证 | 1 天 | 现有 mux interop 改为经 relay |
@@ -436,3 +436,4 @@ Failure: NONE
 |---|---|
 | 2026-11-01 | 建立本文档：C++ relay 行为拆解、Rust 复用面与缺口、目标设计与 R0–R5 分步实施、测试计划与待确认项 |
 | 2026-11-01 | R0 与 R0.5 完成：`transport` 新增 `PortHop` / `KeepAlive` / `open_handshake_channel`，§3.1 复用面同步更新；空闲清理留到 R2 |
+| 2026-11-01 | R1 完成：`crates/relay` 的 `listener` / `handshake` / `session` / `state` / `util` 落地，握手改写与双向转发可用；`Relay::new` 改为接收根配置；新增 `relay_tcp_roundtrip` / `relay_udp_roundtrip`。实现细节与设计差异：listener 只做解密与 conv 分派、把明文帧投递给会话任务（不在监听循环里驱动 KCP）；`listen_on` 不复刻 C++ 的 v4-mapped 映射（已登记 `progress.md` 已知问题 #1.1）；空闲清理/保活/状态日志/端口跳跃仍属 R2/R3 |

@@ -215,9 +215,11 @@ C++ `relay.cpp` 是 client 逻辑的翻版（内部还有 `via_listener` / `via_
 - [ ] 空闲清理抽出：**本轮未做**。server 与 relay 的回收规则不同（relay 按
       `loop_find_expires` 的四条规则、并区分两侧保活时间），在没有 relay 实现前抽取
       容易抽错方向；改为在 relay R2 中随维护任务一起落地并写单元测试。
-- [ ] 再实现 relay，按方向参数化，不复制第三份。
+- [x] 再实现 relay（R1 完成，2026-11-01）：`crates/relay` 只保留本 mode 特有的
+      「握手改写 + 会话分派」，通道、端口探测、保活、握手通道建立全部复用 `transport`，
+      不含与 client 重复的状态机；R2–R4 继续。
 
-**验收**：relay 实现本身不再包含与 client 重复的状态机（relay 落地后复核）。
+**验收**：relay 实现本身不再包含与 client 重复的状态机 —— R1 已满足。
 
 ## 6. 风险与回滚
 
@@ -237,7 +239,7 @@ C++ `relay.cpp` 是 client 逻辑的翻版（内部还有 `via_listener` / `via_
 | 2 结构性去重 | 待开始 | |
 | 3 死代码清理 | 待开始 | |
 | 4 性能优化 | 待开始 | 依赖 D1 |
-| 5 relay 前置 | 🟡 3/4 已完成（2026-11-01） | 端口跳跃、保活、握手通道已下沉；空闲清理随 relay R2 落地 |
+| 5 relay 前置 | ✅ 已完成（2026-11-01） | 端口跳跃、保活、握手通道已下沉；relay R1 已复用这些模块 |
 
 ## 8. 变更记录
 
@@ -246,3 +248,4 @@ C++ `relay.cpp` 是 client 逻辑的翻版（内部还有 `via_listener` / `via_
 | 2026-11-01 | 建立本文档：记录跨模块重复审计、与 C++ 原版对照、分阶段优化路线与决策 D1–D5；补充 5.0 实施顺序（先完成 M5/M6，阶段 1/5 作为 relay 前置，阶段 4 后置） |
 | 2026-11-01 | 完成阶段 1 公共层收口：`is_connection_reset` / `wildcard_addr` / `KcpChannel::{set_rx_minrto, apply_handshake_tuning, apply_data_tuning}` 下沉到 transport；`UserSettings::{kcp_config, fec_parameters}` 与 `KcpConfig::handshake` 下沉到 config/kcp；`log_warning` / `StatusSummary` + `print_status_summary` 下沉到 logging；删除 client/server 两份 `util.rs` 重复函数，5 处通道初始化改为调用助手；测试 106 → 115 |
 | 2026-11-01 | 完成阶段 5 的前三项（relay 前置）：新增 `transport::PortHop`（端口探测与重绑 IO，client 只留定时/选目标/日志）、`transport::KeepAlive`（client TCP/UDP、mux、服务端四处保活统一）、`transport::open_handshake_channel`（client 握手与端口探测共用）；空闲清理因 relay 判定规则不同，留到 relay R2；测试 115 → 118 |
+| 2026-11-01 | relay R1 落地并确认阶段 5 验收：relay 只保留握手改写与会话分派，通道/探测/保活/握手通道全部复用 `transport`，未复制 client 状态机；测试 118 → 126 |
