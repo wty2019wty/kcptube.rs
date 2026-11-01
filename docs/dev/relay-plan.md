@@ -86,7 +86,7 @@ RTT 来源相同，只是应用时机略早。
 
 ### 2.5 生命周期（`relay.cpp:1658`–`1872`）
 
-| 清理项 | 规则 | 常量 |
+| 清理项 | C++ 规则 | 常量 |
 |---|---|---|
 | 握手条目 | 建立后 `4s` 清空输出回调、`8s` 出表 | `KCP_CLEANUP_WAITS = 4` / `×2` |
 | forwarder | `4s` 停回调，`8s` 出表 | `RECEIVER_CLEANUP_WAITS` |
@@ -94,6 +94,10 @@ RTT 来源相同，只是应用时机略早。
 | 端口跳跃 | 有保活时 `min(最后活动, 保活差值) > 31 + keep_alive`，无保活时 `最后活动 > 31` | 触发 `change_new_port`，**不是回收条件** |
 | 数据会话 | 任一方向 `> 255s` 强制回收 | `TIME_GAP_SECONDS` |
 | 数据会话 | 三条件同时超过 `egress->udp_timeout`：全局最后收、ingress 最后收、egress 最后收 | `udp_timeout` |
+
+> 上表是 C++ 的表驱动规则。Rust 侧不建 `expiring_handshakes` / `expiring_forwarders` / `expiring_kcp`：
+> 握手任务在创建后 8 秒自行退出；数据会话收到 `disconnect` / `failure` 后由维护任务在 31 秒关闭，
+> 会话任务再保留 4 秒冲刷；端口跳跃替换下来的旧 socket 保留 2 秒。行为等价，但职责落在各自任务上。
 
 ### 2.6 端口跳跃（`relay.cpp:811`–`914`）
 
@@ -188,64 +192,69 @@ R1–R4 只保留接口位，不实现行为。
 
 ```
 crates/relay/src/
-  lib.rs        Relay 入口：校验配置、构造 RelayState、启动监听与维护任务
-  state.rs      RelayState / HandshakeEntry / RelaySession / 计数器
-  listener.rs   每个监听 socket 的收包循环 + conv 分派
-  handshake.rs  conv==0：ingress 握手条目、向 egress 发起握手、initialise 改写与回传
-  session.rs    数据会话任务：egress socket 收包、5ms 驱动、双向转发
-  forward.rs    drain 内层帧 + 控制帧分派 + 转发到对侧
-  target.rs     目标地址/端口选择与重解析
-  port_hop.rs   R3：relay 侧端口跳跃
-  status.rs     状态摘要
-  util.rs       小工具
+  lib.rs         Relay 入口：校验配置、构造 RelayState、启动监听与维护任务
+  state.rs       RelayState / HandshakeEntry / RelaySession / 计数器
+  listener.rs    每个监听 socket 的收包循环 + conv 分派
+  handshake.rs   conv==0：ingress 握手条目、目标选择/解析、向 egress 发起握手、initialise 改写与回传
+  session.rs     数据会话任务：egress socket 收包、5ms 驱动、drain 内层帧/控制帧分派、双向转发
+  maintenance.rs 每秒维护：空闲回收、disconnect 延迟回收、两侧保活、状态日志
+  port_hop.rs    R3：relay 侧端口跳跃
+  status.rs      两段式状态摘要
+  util.rs        监听地址枚举、随机目标选择、连续性判断
 ```
+
+> 设计阶段曾计划单独的 `forward.rs` / `target.rs`；最终实现把 drain/控制帧分派放进 `session.rs`，
+> 目标选择与重解析放进 `handshake.rs`，模块更少但职责不变。
 
 ### 4.2 核心数据结构
 
 ```rust
 pub struct Relay {
-    settings: Arc<UserSettings>, // 根：log_*、fib_*、config_filename
-    ingress: Arc<UserSettings>,
-    egress: Arc<UserSettings>,
+    settings: UserSettings, // 根配置：log_*、config_filename；ingress/egress 在 RelayState 中展开
 }
 
 struct RelayState {
-    settings: Arc<UserSettings>,
+    settings: Arc<UserSettings>,       // 根：日志路径、config_filename
     ingress: Arc<UserSettings>,
     egress: Arc<UserSettings>,
     ingress_codec: Arc<PacketCodec>,
     egress_codec: Arc<PacketCodec>,
     ingress_fec: Option<(u8, u8)>,
     egress_fec: Option<(u8, u8)>,
+    ingress_fec_original: Option<usize>,
     handshakes: Mutex<HashMap<SocketAddr, Arc<HandshakeEntry>>>,
     sessions: Mutex<HashMap<u32, Arc<RelaySession>>>,
-    targets: RwLock<Vec<String>>,        // 可被 DDNS 刷新（M6）
-    target_ports: RwLock<Vec<u16>>,
-    listener_counters: StatusCounters,
-    forwarder_counters: StatusCounters,
+    listener_counters: Arc<StatusCounters>,
+    forwarder_counters: Arc<StatusCounters>,
     next_status_at: AtomicI64,
 }
 
 struct HandshakeEntry {
     peer: SocketAddr,
-    ingress: Arc<KcpChannel>,            // conv 0，共享 listener socket
-    egress: Mutex<Option<Arc<KcpChannel>>>, // conv 0，独占 socket
-    protocol: AtomicU8,
-    created_at: i64,
+    ingress: Arc<KcpChannel>,               // conv 0，共享 listener socket
+    egress: Mutex<Option<Arc<KcpChannel>>>,  // conv 0，独占 socket
+    egress_socket: Mutex<Option<UdpEndpoint>>,
+    target: Mutex<Option<SocketAddr>>,
+    protocol: Mutex<ProtocolType>,
     established: AtomicBool,
-    egress_peer: Mutex<Option<SocketAddr>>,
+    created_at: i64,
+    tx: mpsc::Sender<Vec<u8>>,              // listener 投递解密后的明文帧
 }
 
 struct RelaySession {
     conv: u32,
     protocol: ProtocolType,
-    ingress: Arc<KcpChannel>,            // 面向客户端
-    egress: Arc<KcpChannel>,             // 面向真实服务端
-    last_activity: AtomicI64,
-    expire_at: AtomicI64,
-    next_keep_alive_ingress: AtomicI64,
-    next_keep_alive_egress: AtomicI64,
+    ingress: Arc<KcpChannel>,               // 面向客户端
+    egress: Arc<KcpChannel>,                // 面向真实服务端
+    egress_socket: StdMutex<UdpEndpoint>,   // 端口跳跃会替换
     closed: AtomicBool,
+    last_data_transfer: AtomicI64,
+    ingress_next_keep_alive: AtomicI64,
+    egress_next_keep_alive: AtomicI64,
+    hopping_at: AtomicI64,
+    hopping_testing: AtomicBool,
+    expire_at: AtomicI64,                   // disconnect/failure 后的计划回收时刻
+    tx: mpsc::Sender<Vec<u8>>,
 }
 ```
 
@@ -356,7 +365,7 @@ async fn drain_and_forward(from: &KcpChannel, to: &KcpChannel, session: &RelaySe
 | 保活 | 两侧独立，`keep_alive > 0` 才启动 |
 | 清理节奏 | 4s / 8s / 31s / 255s，与 C++ 常量一致 |
 | 状态日志 | 两段式 + 每 conv 两行；格式逐字一致 |
-| 端口跳跃 | 见 §9 待确认 |
+| 端口跳跃 | 仅 `[forwarder].dport_refresh` 生效；两处有意偏离见 §9 Q2 与 R3 变更记录 |
 | 统计口径 | `receive (raw)` 用收到的密文长度；`send (raw)` 用 `KcpChannel::take_output_bytes()`（密文长度），与 C++ 的「加密前长度」略有差异，仅影响日志 |
 
 ## 6. 分步实施
@@ -396,6 +405,11 @@ cargo test --workspace
 | T9 | `initialise` 改写：带宽夹取、端口范围替换 | `server_initialise_uses_ingress_ports_and_limits`、`non_continuous_ingress_ports_keep_server_range`、`bandwidth_is_clamped_like_cpp` | ✅ |
 | T10 | 与 C++ 客户端 / 服务端互通 | 2026-11-01 用桌面 C++ `20260329` 原版跑通 `core` / `fec` / `mux` / `reverse`（`scripts/verify-t10-relay-interop.ps1`）；客户端端口跳跃与自定义映射未纳入自动脚本 | ✅ |
 
+> T10 的自动脚本覆盖：`core`（C++ client → Rust relay → C++ server）、`fec`、`mux` 与
+> `reverse`（Rust client → C++ relay → Rust server）。**客户端端口跳跃经 relay** 与
+> **`[custom_input*]` / `ignore_destination_*` 的 C++ 互通**尚未纳入脚本；后者已由 R4 的
+> Rust client/server 用例覆盖，跨 C++ 的组合留作后续可选扩展。
+
 ### 7.2 `--try`（tester）
 
 - 输入：client 配置或 relay 配置（relay 用 `[forwarder]` 分段）。
@@ -424,15 +438,15 @@ Failure: NONE
 
 回滚：relay 是独立 crate，`main.rs` 只有一处分支；出问题可整体回退到 `NotImplemented` 而不影响 client/server。
 
-## 9. 待确认
+## 9. 决策记录
 
-| # | 问题 | 建议 |
+| # | 问题 | 结论 |
 |---|---|---|
-| Q1 | relay 的端口跳跃是否第一版就做？ | 建议 R3 再做，R1/R2 先不做，避免一次引入两个变量 |
-| Q2 | relay 的跳跃间隔只认 `[forwarder]` 段自己的 `dport_refresh`，根配置的同名项不生效（设 30 无效、设 0 关不掉） | 已决定**保持与 C++ 一致**（仅 `[forwarder]` 生效，`copy_settings` 不复制该字段）；不再改为继承根配置 |
-| Q3 | §2.9 的四个 C++ 缺陷是否照抄？ | 建议修掉并登记；它们不影响线格式 |
-| Q4 | `--try` 是否与 relay 同批交付？ | 建议 R5 单独交付，互不阻塞 |
-| Q5 | 是否需要 `crates/tester` 新 crate？ | 建议新建；比塞进 relay 更清晰，也便于以后扩展 |
+| Q1 | relay 的端口跳跃是否第一版就做？ | 按 R3 实施：R1/R2 先不做，避免一次引入两个变量 |
+| Q2 | relay 的跳跃间隔只认 `[forwarder]` 段自己的 `dport_refresh`，根配置的同名项不生效（设 30 无效、设 0 关不掉） | **保持与 C++ 一致**（仅 `[forwarder]` 生效，`copy_settings` 不复制该字段）；不再改为继承根配置 |
+| Q3 | §2.9 的 C++ 缺陷是否照抄？ | 已全部修掉并登记；新增 `relay.cpp:1369` 的 egress 加密参数误用与 Windows `listen_on` 崩溃两条限制 |
+| Q4 | `--try` 是否与 relay 同批交付？ | 已作为 R5 单独交付，互不阻塞 |
+| Q5 | 是否需要 `crates/tester` 新 crate？ | 已新建 `crates/tester`，比塞进 relay 更清晰，也便于以后扩展 |
 
 ## 10. 变更记录
 
@@ -447,3 +461,4 @@ Failure: NONE
 | 2026-11-01 | R5 完成：新增 `crates/tester`（`kcptube-tester`），`--try` 对「地址 × 端口」并发探测并输出与 C++ `PrintResults` 一致的文本；`main` 已接入，支持 client / relay 配置；新增 3 个单元测试与 2 个集成测试 |
 | 2026-11-01 | **代码验证后的收尾修复**：① 保活——建会话时把两侧 `next_keep_alive` 初始化为当前时刻，修复此前 `i64::MAX` 导致 `send_keep_alive_if_due` 永不发送的问题，新增 `scheduled_keep_alive_is_actually_sent`；② `disconnect` / `failure`——先记 `now + KEEPALIVE_TIMEOUT`（31 秒）再关闭，会话任务保留 4 秒冲刷，新增 `disconnect_expiry_waits_for_scheduled_time`；③ 目标解析失败 / 无法建立出口通道时向客户端回 `failure`（`inform_error_packet`），新增 `relay_unreachable_target_reports_failure`；④ 客户端经 relay 端口跳跃新增 `relay_client_port_hopping_keeps_connection`（读取客户端日志确认确实发生跳跃）；⑤ 服务端 `initialise` 改写抽成 `apply_ingress_details`，补端口范围与带宽单测；同步修正 §2.3 / §2.5 / §7.1 的时机与测试状态。T10 仍需人工验收 |
 | 2026-11-01 | **T4 / T10 人工验收通过**：`scripts/verify-t10-relay-interop.ps1` 四个场景全部 PASS（C++ client → Rust relay → C++ server 的 `core` / `fec` / `mux`，以及 Rust client → C++ relay → Rust server 的 `reverse`）；`scripts/verify-t4-relay-keepalive.ps1` 在客户端 `keep_alive=0`、relay `keep_alive=1` 下空闲 **300 秒**后 TCP/UDP 仍通。同期新增 `scripts/build-legacy-mingw.ps1`（在 `build/legacy-src` 副本上构建，不污染 `legacy-cpp/`）。验收中确认两个 C++ relay 限制：`[listener]` 段 `listen_on` 触发 `0xC0000005`；`relay.cpp:1369` 的 egress 误用 ingress 加密参数，导致两段必须使用相同密码与算法（已补入 §2.9）。§7.1 的 T1–T10 全部标为 ✅ |
+| 2026-11-01 | docs: 收尾文档——§4.1/§4.2 按最终代码更新模块与结构（去掉未采用的 `forward.rs` / `target.rs`，补 `maintenance.rs` 与 `disconnect` 延迟回收字段）；§2.5 标明上表是 C++ 表驱动规则并补充 Rust 的任务式收尾；§7.1 增加 T10 覆盖范围说明；§9 由「待确认」改为「决策记录」，Q1/Q3/Q4/Q5 标记已完成；§5 端口跳跃指向 §9 Q2 |
