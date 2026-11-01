@@ -7,6 +7,7 @@
 //! 三张表分阶段回收。Rust 侧由各任务自行收尾，因此这里只需要：
 //!
 //! - 空闲/强制的会话判定（命中后标记关闭，会话任务 5ms 内退出并保留 4 秒冲刷）；
+//! - `disconnect` / `failure` 的延迟回收（31 秒，对应 C++ `expiring_kcp`）；
 //! - 两侧独立的保活发送；
 //! - 每 60 秒输出一次状态摘要。
 //!
@@ -30,9 +31,10 @@ pub(crate) async fn run_maintenance(state: Arc<RelayState>) {
     }
 }
 
-/// 回收空闲会话，对应 C++ `loop_find_expires` 的前两条判定。
+/// 回收空闲会话，对应 C++ `loop_find_expires` 的两条清理判定
+/// （255 秒强制回收、三个时间同时超过 `udp_timeout`）。
 ///
-/// 端口跳跃部分（`change_new_port`）属 R3，此处不处理。
+/// 端口跳跃不在这里处理：由 `session` 在每次成功转发后触发 `port_hop`。
 async fn expire_sessions(state: &Arc<RelayState>) {
     let now = now_secs();
     let udp_timeout = i64::from(state.egress.udp_timeout);
@@ -40,6 +42,20 @@ async fn expire_sessions(state: &Arc<RelayState>) {
 
     for session in sessions {
         if session.is_closed() {
+            continue;
+        }
+        // 已收到 `disconnect` / `failure`：只等待计划回收时刻，不再套用空闲规则
+        // （对应 C++ `expiring_kcp` 首次插入后不再被 `loop_find_expires` 覆盖）。
+        let expire_at = session.expire_at();
+        if expire_at != i64::MAX {
+            if now >= expire_at {
+                state.sessions.lock().await.remove(&session.conv);
+                session.close();
+                tracing::debug!(
+                    "relay 会话 conv={} 的 disconnect 延迟回收到期，已关闭",
+                    session.conv
+                );
+            }
             continue;
         }
         let ingress_gap = (now - session.ingress.last_input_time().await).abs();
@@ -132,6 +148,13 @@ async fn send_keep_alive_if_due(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kcptube_config::{RunningMode, UserSettings};
+    use kcptube_crypto::EncryptionMode;
+    use kcptube_kcp::KcpConfig;
+    use kcptube_protocol::constant::KEEPALIVE_TIMEOUT;
+    use kcptube_transport::{KcpChannel, PacketCodec, UdpEndpoint};
+    use std::net::SocketAddr;
+    use tokio::sync::mpsc;
 
     #[test]
     fn time_gap_forces_expiry() {
@@ -153,5 +176,127 @@ mod tests {
     fn keep_alive_disabled_means_no_expiry() {
         // interval = 0 时不会进入发送分支（由 tick_keep_alive 提前返回）
         assert!(!should_expire(10, 10, 10, 180));
+    }
+
+    async fn test_channel(codec: Arc<PacketCodec>, peer: SocketAddr) -> Arc<KcpChannel> {
+        let socket = UdpEndpoint::bind("127.0.0.1:0".parse().expect("addr"))
+            .await
+            .expect("bind");
+        Arc::new(
+            KcpChannel::new_with_fec(codec, KcpConfig::handshake(1418), socket, peer, None)
+                .await
+                .expect("channel"),
+        )
+    }
+
+    struct TestRig {
+        state: Arc<RelayState>,
+        session: Arc<RelaySession>,
+        ingress: Arc<KcpChannel>,
+        egress: Arc<KcpChannel>,
+    }
+
+    async fn rig(keep_alive: u16) -> TestRig {
+        let peer_socket = UdpEndpoint::bind("127.0.0.1:0".parse().expect("addr"))
+            .await
+            .expect("bind");
+        let codec = Arc::new(PacketCodec::new(EncryptionMode::None, ""));
+        let ingress = test_channel(codec.clone(), peer_socket.local_addr().expect("addr")).await;
+        let egress = test_channel(codec, peer_socket.local_addr().expect("addr")).await;
+        let egress_socket = UdpEndpoint::bind("127.0.0.1:0".parse().expect("addr"))
+            .await
+            .expect("bind");
+
+        let ingress_settings = UserSettings {
+            mode: RunningMode::RelayIngress,
+            keep_alive,
+            ..UserSettings::default()
+        };
+        let egress_settings = UserSettings {
+            mode: RunningMode::RelayEgress,
+            keep_alive,
+            ..UserSettings::default()
+        };
+        let root = UserSettings {
+            mode: RunningMode::Relay,
+            ingress: Some(Box::new(ingress_settings)),
+            egress: Some(Box::new(egress_settings)),
+            ..UserSettings::default()
+        };
+        let state = Arc::new(RelayState::new(Arc::new(root)).expect("state"));
+
+        let (tx, _rx) = mpsc::channel(1);
+        let session = Arc::new(RelaySession::new(
+            1,
+            ProtocolType::Tcp,
+            ingress.clone(),
+            egress.clone(),
+            egress_socket,
+            tx,
+        ));
+        TestRig {
+            state,
+            session,
+            ingress,
+            egress,
+        }
+    }
+
+    #[tokio::test]
+    async fn scheduled_keep_alive_is_actually_sent() {
+        let rig = rig(1).await;
+        let now = now_secs();
+        // 把上次发送时间拨回过去，确保下面的断言确实来自一次新的发送
+        rig.ingress.mark_keep_alive_sent(now - 10);
+        rig.egress.mark_keep_alive_sent(now - 10);
+        rig.session.schedule_keep_alive(now, 1, 1);
+        rig.state
+            .sessions
+            .lock()
+            .await
+            .insert(1, rig.session.clone());
+
+        tick_keep_alive(&rig.state).await;
+
+        assert!(rig.ingress.keep_alive_send_time() >= now);
+        assert!(rig.egress.keep_alive_send_time() >= now);
+        assert!(
+            rig.session.ingress_next_keep_alive() > now,
+            "下一次保活时间应推进"
+        );
+    }
+
+    #[tokio::test]
+    async fn disconnect_expiry_waits_for_scheduled_time() {
+        let now = now_secs();
+
+        let scheduled = rig(0).await;
+        scheduled.session.schedule_expire(now + KEEPALIVE_TIMEOUT);
+        // 重复计划不覆盖首次时刻（对应 C++ 只插入一次 expiring_kcp）
+        scheduled.session.schedule_expire(now - 1);
+        assert_eq!(scheduled.session.expire_at(), now + KEEPALIVE_TIMEOUT);
+        scheduled
+            .state
+            .sessions
+            .lock()
+            .await
+            .insert(1, scheduled.session.clone());
+
+        expire_sessions(&scheduled.state).await;
+
+        assert!(!scheduled.session.is_closed());
+        assert!(scheduled.state.sessions.lock().await.contains_key(&1));
+
+        let due = rig(0).await;
+        due.session.schedule_expire(now - 1);
+        due.state
+            .sessions
+            .lock()
+            .await
+            .insert(1, due.session.clone());
+        expire_sessions(&due.state).await;
+
+        assert!(due.session.is_closed());
+        assert!(due.state.sessions.lock().await.is_empty());
     }
 }

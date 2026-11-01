@@ -150,6 +150,11 @@ pub(crate) struct RelaySession {
     hopping_at: AtomicI64,
     /// 是否有进行中的端口探测
     hopping_testing: AtomicBool,
+    /// 收到 `disconnect` / `failure` 后的计划回收时刻（`i64::MAX` 表示未计划）
+    ///
+    /// 对应 C++ `process_disconnect` 把会话放进 `expiring_kcp` 并设为
+    /// `now + KEEPALIVE_TIMEOUT`；到期后任务再保留 `KCP_CLEANUP_WAITS` 秒冲刷。
+    expire_at: AtomicI64,
     /// listener 投递解密后的明文帧
     pub(crate) tx: mpsc::Sender<Vec<u8>>,
 }
@@ -176,6 +181,7 @@ impl RelaySession {
             egress_next_keep_alive: AtomicI64::new(i64::MAX),
             hopping_at: AtomicI64::new(i64::MAX),
             hopping_testing: AtomicBool::new(false),
+            expire_at: AtomicI64::new(i64::MAX),
             tx,
         }
     }
@@ -246,5 +252,56 @@ impl RelaySession {
         if self.ingress.peer() != peer {
             self.ingress.set_peer(peer);
         }
+    }
+
+    /// 为两侧安排第一次保活发送。
+    ///
+    /// 对应 C++ `create_kcp_bidirections` 把 `kcp_keepalive_*` 的首次时间设为
+    /// 建会话时刻：下一轮定时器（1 秒）就会发出第一包。此前这里留的是
+    /// `i64::MAX`，导致 `send_keep_alive_if_due` 永远提前返回、relay 从不主动保活。
+    pub(crate) fn schedule_keep_alive(
+        &self,
+        now: i64,
+        ingress_interval: i64,
+        egress_interval: i64,
+    ) {
+        self.ingress_next_keep_alive.store(
+            initial_keep_alive_at(ingress_interval, now),
+            Ordering::Relaxed,
+        );
+        self.egress_next_keep_alive.store(
+            initial_keep_alive_at(egress_interval, now),
+            Ordering::Relaxed,
+        );
+    }
+
+    /// 收到 `disconnect` / `failure` 后的计划回收时刻；`i64::MAX` 表示未计划。
+    pub(crate) fn expire_at(&self) -> i64 {
+        self.expire_at.load(Ordering::Relaxed)
+    }
+
+    /// 安排延迟回收；已有计划时不覆盖（对应 C++ 只在首次 `process_disconnect` 时插入）。
+    pub(crate) fn schedule_expire(&self, at: i64) {
+        let _ = self
+            .expire_at
+            .compare_exchange(i64::MAX, at, Ordering::SeqCst, Ordering::SeqCst);
+    }
+}
+
+/// 会话建立时第一次保活的时间：`keep_alive=0` 表示关闭，否则从当前时刻开始。
+pub(crate) fn initial_keep_alive_at(interval: i64, now: i64) -> i64 {
+    if interval > 0 { now } else { i64::MAX }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keep_alive_is_scheduled_when_enabled() {
+        let now = 1_700_000_000;
+        assert_eq!(initial_keep_alive_at(5, now), now);
+        assert_eq!(initial_keep_alive_at(0, now), i64::MAX);
+        assert_eq!(initial_keep_alive_at(-1, now), i64::MAX);
     }
 }

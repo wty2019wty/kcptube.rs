@@ -14,7 +14,7 @@
 use crate::RelayError;
 use crate::listener::is_drained;
 use crate::state::{RelaySession, RelayState};
-use kcptube_protocol::constant::{KCP_CLEANUP_WAITS, PACKET_LENGTH};
+use kcptube_protocol::constant::{KCP_CLEANUP_WAITS, KEEPALIVE_TIMEOUT, PACKET_LENGTH};
 use kcptube_protocol::packet::{Feature, create_keep_alive_response_packet, unpack_inner};
 use kcptube_transport::{MAX_INNER_MESSAGE, now_ms, now_secs, parse_frame};
 use std::sync::Arc;
@@ -126,7 +126,10 @@ async fn drain(
             }
             Feature::Failure | Feature::Disconnect => {
                 to.send(&buffer[..size]).await?;
-                session.close();
+                // 对应 C++ `process_disconnect`：先把会话放进 `expiring_kcp`
+                // 并记为 `now + KEEPALIVE_TIMEOUT`（31 秒），到期后会话任务
+                // 再保留 `KCP_CLEANUP_WAITS` 秒冲刷最后的报文。
+                session.schedule_expire(now_secs() + KEEPALIVE_TIMEOUT);
                 break;
             }
             // raw_data / mux_transfer / mux_cancel / pre_connect_custom_address

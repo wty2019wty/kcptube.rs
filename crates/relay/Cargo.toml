@@ -17,3 +17,6 @@ rand.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+kcptube-crypto.workspace = true

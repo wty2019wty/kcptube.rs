@@ -18,11 +18,12 @@ use crate::RelayError;
 use crate::listener::is_drained;
 use crate::state::{HandshakeEntry, RelaySession, RelayState};
 use crate::util::{is_continuous, random_pick};
+use kcptube_config::UserSettings;
 use kcptube_kcp::KcpConfig;
 use kcptube_protocol::constant::{HANDSHAKE_TIMEOUT, KCP_CLEANUP_WAITS, PACKET_LENGTH};
 use kcptube_protocol::packet::{
     Feature, ProtocolType, SettingsWrapper, create_keep_alive_response_packet,
-    create_test_connection_packet, unpack_inner,
+    create_test_connection_packet, inform_error_packet, unpack_inner,
 };
 use kcptube_transport::{
     KcpChannel, MAX_INNER_MESSAGE, UdpEndpoint, now_ms, now_secs, open_handshake_channel,
@@ -215,10 +216,27 @@ impl RelayState {
             return Ok(());
         }
 
-        let (host, port) = self.pick_egress_target()?;
+        let (host, port) = match self.pick_egress_target() {
+            Ok(target) => target,
+            Err(error) => {
+                self.reply_failure(entry, &error.to_string()).await;
+                return Err(error);
+            }
+        };
         let candidates =
-            resolve_endpoints_filtered(&host, port, self.egress.ip_version_only.want_ipv4())
-                .await?;
+            match resolve_endpoints_filtered(&host, port, self.egress.ip_version_only.want_ipv4())
+                .await
+            {
+                Ok(candidates) => candidates,
+                Err(error) => {
+                    self.reply_failure(
+                        entry,
+                        &format!("无法解析 relay 目标 {host}:{port}：{error}"),
+                    )
+                    .await;
+                    return Err(error.into());
+                }
+            };
 
         for peer in candidates {
             let (channel, socket) = match open_handshake_channel(
@@ -257,9 +275,22 @@ impl RelayState {
         }
 
         self.log_message(&format!("无法连接 relay 目标 {host}:{port}"));
+        self.reply_failure(entry, &format!("无法连接 relay 目标 {host}:{port}"))
+            .await;
         Err(RelayError::Startup(format!(
             "无法连接 relay 目标 {host}:{port}"
         )))
+    }
+
+    /// 向客户端回 `failure`（对应 C++ `inform_error_packet`），用于目标地址
+    /// 解析失败或无法建立出口通道。客户端收到后会关闭本地连接，而不是等到
+    /// 30 秒握手超时。
+    async fn reply_failure(&self, entry: &HandshakeEntry, message: &str) {
+        let protocol = *entry.protocol.lock().await;
+        let packet = inform_error_packet(protocol, message);
+        if entry.ingress.send(&packet).await.is_ok() {
+            let _ = entry.ingress.update(now_ms()).await;
+        }
     }
 }
 
@@ -321,17 +352,7 @@ impl RelayState {
                         continue;
                     }
 
-                    // 端口范围替换成 relay 自己的（ingress 端口连续时）
-                    if is_continuous(&self.ingress.listen_ports) {
-                        settings.port_start = *self.ingress.listen_ports.first().unwrap_or(&0);
-                        settings.port_end = *self.ingress.listen_ports.last().unwrap_or(&0);
-                    }
-                    settings.inbound_bandwidth =
-                        clamp_bandwidth(settings.inbound_bandwidth, self.ingress.inbound_bandwidth);
-                    settings.outbound_bandwidth = clamp_bandwidth(
-                        settings.outbound_bandwidth,
-                        self.ingress.outbound_bandwidth,
-                    );
+                    apply_ingress_details(&mut settings, &self.ingress);
 
                     let offset = size - body.len();
                     let mut packet = inner[..size].to_vec();
@@ -435,6 +456,13 @@ impl RelayState {
             egress_socket,
             tx,
         ));
+        // 与 C++ `create_kcp_bidirections` 一致：两侧各自按本段 `keep_alive`
+        // 从当前时刻开始排保活（`0` 表示关闭）。
+        session.schedule_keep_alive(
+            now_secs(),
+            i64::from(self.ingress.keep_alive),
+            i64::from(self.egress.keep_alive),
+        );
         // 对应 C++ `create_kcp_bidirections`：`dport_refresh` 为 0 时关闭跳跃
         let refresh = i64::from(self.egress.dynamic_port_refresh);
         session.set_hopping_at(if refresh > 0 {
@@ -461,6 +489,19 @@ fn clamp_bandwidth(requested: u64, limit: u64) -> u64 {
     }
 }
 
+/// 改写服务端返回的 `initialise`：端口范围替换为 relay 自己的（ingress 端口连续时），
+/// 带宽与 ingress 段上限取小。对应 C++ `relay.cpp:1040`–`1046`。
+fn apply_ingress_details(settings: &mut SettingsWrapper, ingress: &UserSettings) {
+    if is_continuous(&ingress.listen_ports) {
+        settings.port_start = *ingress.listen_ports.first().unwrap_or(&0);
+        settings.port_end = *ingress.listen_ports.last().unwrap_or(&0);
+    }
+    settings.inbound_bandwidth =
+        clamp_bandwidth(settings.inbound_bandwidth, ingress.inbound_bandwidth);
+    settings.outbound_bandwidth =
+        clamp_bandwidth(settings.outbound_bandwidth, ingress.outbound_bandwidth);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -472,5 +513,52 @@ mod tests {
         // 未限制（0）时，客户端申请的带宽会被清零——与 C++ 行为一致
         assert_eq!(clamp_bandwidth(1000, 0), 0);
         assert_eq!(clamp_bandwidth(0, 500), 0);
+    }
+
+    fn server_settings() -> SettingsWrapper {
+        SettingsWrapper {
+            uid: 42,
+            port_start: 1000,
+            port_end: 1001,
+            outbound_bandwidth: 1_000_000,
+            inbound_bandwidth: 500,
+            user_input_port: 0,
+            user_input_ip: String::new(),
+        }
+    }
+
+    #[test]
+    fn server_initialise_uses_ingress_ports_and_limits() {
+        let mut settings = server_settings();
+        let ingress = UserSettings {
+            listen_ports: vec![3000, 3001, 3002],
+            outbound_bandwidth: 4000,
+            inbound_bandwidth: 800,
+            ..UserSettings::default()
+        };
+
+        apply_ingress_details(&mut settings, &ingress);
+
+        // uid 与 user_input 保持不变，端口范围替换成 ingress 的连续范围
+        assert_eq!(settings.uid, 42);
+        assert_eq!(settings.user_input_port, 0);
+        assert_eq!(settings.port_start, 3000);
+        assert_eq!(settings.port_end, 3002);
+        assert_eq!(settings.outbound_bandwidth, 4000);
+        assert_eq!(settings.inbound_bandwidth, 500);
+    }
+
+    #[test]
+    fn non_continuous_ingress_ports_keep_server_range() {
+        let mut settings = server_settings();
+        let ingress = UserSettings {
+            listen_ports: vec![3000, 3002],
+            ..UserSettings::default()
+        };
+
+        apply_ingress_details(&mut settings, &ingress);
+
+        assert_eq!(settings.port_start, 1000);
+        assert_eq!(settings.port_end, 1001);
     }
 }

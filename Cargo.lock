@@ -499,6 +499,7 @@ name = "kcptube-relay"
 version = "0.1.0"
 dependencies = [
  "kcptube-config",
+ "kcptube-crypto",
  "kcptube-kcp",
  "kcptube-logging",
  "kcptube-protocol",

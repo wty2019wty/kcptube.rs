@@ -18,10 +18,10 @@
 //! | `listener.rs` | ingress 监听、按 `conv` 分派 |
 //! | `handshake.rs` | 两段之间的 `initialise` 改写与会话建立 |
 //! | `session.rs` | 两条 KCP 通道之间的数据转发 |
+//! | `maintenance.rs` | 空闲回收、两侧保活、状态日志 |
+//! | `port_hop.rs` | egress 端口跳跃 |
+//! | `status.rs` | 两段式状态摘要 |
 //! | `state.rs` | 握手表、会话表与共享状态 |
-//!
-//! 本阶段（R1）只包含握手与数据转发；空闲清理、保活发送、状态日志与端口
-//! 跳跃属于 R2/R3。
 
 mod handshake;
 mod listener;
