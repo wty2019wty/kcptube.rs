@@ -351,6 +351,7 @@ cargo run -p kcptube -- --check-config service/config_sample_*.conf → No
 | 2026-11-01 | fix: 未指定 `ipv4_only` / `ipv6_only` 时监听地址改为 `[::]` 双栈（与 C++ `udp_server::initialise` 一致，仅 `ipv6_only` 才置 `IPV6_V6ONLY`），修复默认无法被 IPv6 / `localhost(::1)` 访问的问题；已知问题 #12 关闭 |
 | 2026-11-01 | chore: 发布产物体积优化 —— release 打开 `strip`/fat LTO、`opt-level = "s"`（加密/KCP/转发/校验和热点仍为 `-O3`）、`tokio` 由 `full` 收窄到实际特性、`clap` 去掉彩色与拼写建议、`tracing-subscriber` 用 `Targets` 取代 `env-filter`（省掉 regex）；Windows GNU 产物体积 2.78 MB → 1.26 MB（约 -55%），musl 静态产物 2.41 MB → 1.44 MB（约 -40%） |
 | 2026-11-01 | **M4 完成（自定义映射）**：客户端在 `ignore_listen_*` 下按 `[custom_input*]` 逐条监听并随 `request_initialise_packet_with_address` 下发目标；mux 模式发 `pre_connect_custom_address`；服务端 `ignore_destination_*` 生效，mux 握手不再要求 `destination_*`。新增 4 个自定义映射 interop 测试、100 并发 mux TCP 验收测试、进程内丢包代理下的 FEC 端到端测试，以及 3 个客户端监听项单元测试；测试增至 106，已知问题 #7 关闭 |
+| 2026-11-01 | refactor: 拆分三个 1000+ 行源文件（纯移动、行为不变）——`kcp/src/lib.rs` 1354 → 204 行，拆为 `api`/`send`/`recv`/`ack`/`timer`/`tests`；`client/src/lib.rs` 1541 → 212 行，拆为 `listen`/`state`/`handshake`/`tcp`/`udp`/`mux`/`port_hop`/`util`；`server/src/lib.rs` 1300 → 145 行，拆为 `state`/`socket`/`handshake`/`data`/`relay`/`mux`/`status`/`util`。所有单元测试、C++ 对撞向量与 13 个 interop 测试保持通过 |
 
 ---
 
