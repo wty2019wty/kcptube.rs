@@ -69,7 +69,7 @@
 | `shares/data_operations.cpp` | 642 | 加密调度、FEC 容器、xor 差分 | `kcptube-crypto` + `kcptube-fec` | 中 | M1 |
 | `networks/connections.hpp` | 621 | 会话类定义、包结构体 | 同上 | 中 | M1/M2 |
 | `shares/aead.hpp` | 471 | 4 种 AEAD 实现、IV 派生 | `kcptube-crypto` | 中 | M1 |
-| `modes/tester.cpp` | 392 | `--try` 连通性测试 | `kcptube-tester`（待建） | 中 | M5 |
+| `modes/tester.cpp` | 392 | `--try` 连通性测试 | `kcptube-tester`（已建立） | 中 | M5 |
 | `networks/kcp.cpp` | 292 | ikcp 的 C++ 包装 | `kcptube-kcp` | 低 | M2 |
 | `networks/dns_helper.cpp` | 288 | DNS TXT 查询（Windows DnsQuery / resolv） | `kcptube-transport` | 中 | M6 |
 | `shares/share_defines.cpp` | 237 | 参数工具、日志、ZFEC 初始化 | `kcptube-config` / `kcptube-logging` / `kcptube-fec` | 低 | M1 |
@@ -91,13 +91,13 @@ crates/
   logging/     messages / status / ip 三类日志文件
   client/      客户端模式（TCP/UDP/mux）
   server/      服务端模式（TCP/UDP/mux）
-  relay/       中继模式（仅入口）
+  relay/       中继模式
+  tester/      --try 连通性测试
   kcptube/     可执行程序（clap）
 ```
 
 规划中的新增 crate：
 
-- `kcptube-tester`：`--try` 连通性测试（对应 `tester.cpp`）
 - `kcptube-platform`（可选）：Windows `DnsQuery_W`、FreeBSD `SO_SETFIB`、BSD `resolv` 的隔离封装
 
 ---

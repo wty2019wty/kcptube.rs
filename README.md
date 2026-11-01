@@ -15,8 +15,8 @@
 | 配置解析（`crates/config`） | 🟢 完整解析与校验，`--check-config` 可用 |
 | 传输层（`crates/transport`） | 🟢 KCP 调度、加密包层、UDP/TCP 封装、`KcpChannel`、FEC 收发流水线、mux 隧道 |
 | 日志（`crates/logging`） | 🟢 messages / status 两类文件已接入；`ip_address.log` 待 STUN/DDNS（M6） |
-| client / server / relay | 🟢 client/server 支持 TCP + UDP、单通道与 mux 多路复用、端口跳跃、自定义映射（`[custom_input*]`）与 FEC、保活、会话回收、握手重试；relay 仍为入口 |
-| 连通性测试（`--try`） | 🟡 未实现 |
+| client / server / relay | 🟢 client/server 支持 TCP + UDP、单通道与 mux 多路复用、端口跳跃、自定义映射（`[custom_input*]`）与 FEC、保活、会话回收、握手重试；relay 支持两段式握手改写、双向转发、空闲回收、两侧保活、状态日志与 egress 端口跳跃 |
+| 连通性测试（`--try`） | 🟢 已实现（`crates/tester`），支持 client/relay 配置 |
 | STUN / DDNS | 🟡 计划 M6 |
 
 ## 文档
@@ -26,7 +26,7 @@
 - [使用文档首页](docs/README.md)：模式介绍、命令行用法、配置文件格式速览
 - [参数列表](docs/parameters.md)：全部配置项、KCP 预设值、加密与校验、带宽、日志
 - [常规配置](docs/client-server.md)：客户端 / 服务端配置示例、端口跳跃、多地址
-- [中继模式配置](docs/relay-mode.md)（运行期尚未实现）
+- [中继模式配置](docs/relay-mode.md)
 - [FEC 使用介绍](docs/fec.md)、[MTU 设置](docs/mtu.md)
 - [自定义映射](docs/custom-ip-mappings.md)、[具体示例](docs/specific-examples.md)
 

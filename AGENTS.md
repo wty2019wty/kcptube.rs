@@ -37,8 +37,8 @@ cargo test --workspace
   `config` 允许依赖 `kcp`，仅用于 `KcpConfig` 的纯参数映射（无 IO、无环）。
 - `transport`：tokio 版 asio 层（会话、KCP 调度、加密包层、FEC、mux）。
 - `client` / `server` / `relay`：三种运行模式；`kcptube` 是唯一的 bin（clap）。
-- 未实现（不要当成 bug 顺手补）：`relay` 仅有入口、`--try` 只打印提示、STUN/DDNS、
-  `[custom_input*]` / `ignore_destination_*` 转发。计划见 `docs/progress.md`。
+- 未实现（不要当成 bug 顺手补）：STUN/DDNS、FreeBSD `SO_SETFIB`、性能基准与发布产物。
+  `relay` 与 `--try` 已可用，`[custom_input*]` / `ignore_destination_*` 已接入；计划见 `docs/progress.md`。
 - `legacy-cpp/`：**只读参考实现**。不要为适配 Rust 或 MinGW 修改其中源码；编译适配放在外部副本或 `build/`。
 - `service/`：示例配置与 systemd unit `service/kcptube`（不是二进制）。
 - `docs/`：本项目的使用文档与计划；`legacy-cpp/docs/` 是上游文档，只读。

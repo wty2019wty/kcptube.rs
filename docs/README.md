@@ -15,8 +15,8 @@
 | 保活（`keep_alive`）、带宽限速、`blast` | 🟢 可用 |
 | 日志（`log_path`） | 🟢 可用 |
 | `--check-config` 配置校验 | 🟢 可用 |
-| `--try` 连通性测试 | 🟡 尚未实现（运行时仅提示） |
-| 中继模式（`mode=relay`） | 🟡 配置可解析，运行时尚未实现 |
+| `--try` 连通性测试 | 🟢 可用（支持 client/relay 配置） |
+| 中继模式（`mode=relay`） | 🟢 可用（两段式握手改写、双向转发、保活、状态日志、端口跳跃） |
 | 自定义映射（`[custom_input*]`） | 🟢 可用（含 `ignore_listen_*` / `ignore_destination_*` 与 mux 预连接） |
 | STUN / DDNS（`stun_server`、`update_ipv4`、`update_ipv6`、`destination_dnstxt`） | 🟡 尚未实现（参数可解析、可校验） |
 | FreeBSD 策略路由（`fib_ingress` / `fib_egress`） | 🟡 尚未实现（参数可解析） |
@@ -59,7 +59,7 @@ Error Found in Configuration File(s): Yes
 
 只要任意配置文件存在错误，程序就不会启动任何模式（无论是否指定 ``--check-config``）。
 
-#### 连通性测试（尚未实现）
+#### 连通性测试
 如果想在连接前测试一下连接是否畅通，可以加上 ``--try`` 选项：
 
 ```
@@ -70,7 +70,20 @@ kcptube --try config1.conf
 kcptube config1.conf --try
 ```
 
-**注意**：Rust 版当前尚未实现连通性测试，指定 ``--try`` 会打印「连通性测试（--try）尚未实现」后直接退出。该功能计划在后续版本补齐。
+程序会对配置里的「每个目标地址 × 每个目标端口」并发建立握手并发送探测包，30 秒超时后按地址输出结果：
+
+```
+Testing...
+Connection Test Result #0 of "example.com":
+Selected IP Address: 1.2.3.4
+Success: ALL (5)
+Failure: NONE
+
+```
+
+- 只对 `mode=client`（取根配置）与 `mode=relay`（取 `[forwarder]` 段）生效；`mode=server` 与 C++ 一致不参与测试。
+- `Success` / `Failure` 有三种形式：`NONE`、`ALL (n)`、`(k): 端口列表`。
+- `destination_dnstxt` 依赖 DNS TXT，随 M6 的 DDNS 一起支持；当前版本会忽略该字段。
 
 #### 版本号
 Rust 版只对外自报一个版本号，来源是根 `Cargo.toml` 里声明的 `version`：
@@ -104,7 +117,7 @@ Rust 版只对外自报一个版本号，来源是根 `Cargo.toml` 里声明的 
 |---|---|
 | [参数列表](parameters.md) | 全部配置项、KCP 预设值、加密与校验、带宽、日志 |
 | [常规配置](client-server.md) | 客户端 / 服务端基础配置、动态端口、多地址、手动 KCP |
-| [中继模式配置](relay-mode.md) | 中继节点配置（当前版本尚未实现运行期） |
+| [中继模式配置](relay-mode.md) | 中继节点配置与两段式拓扑 |
 | [FEC 使用介绍](fec.md) | 前向纠错的格式、调优建议 |
 | [MTU 设置](mtu.md) | `mtu` / `kcp_mtu` 的换算与开销 |
 | [自定义映射](custom-ip-mappings.md) | `[custom_input*]` 映射规则（TCP / UDP / mux 均已接入） |

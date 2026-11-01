@@ -365,7 +365,7 @@ async fn drain_and_forward(from: &KcpChannel, to: &KcpChannel, session: &RelaySe
 | **R2** | 生命周期：握手/forwarder/会话清理、保活、状态日志、错误日志 | ✅ 已完成 | 空闲回收、`keep_alive` 用例通过 |
 | **R3** | 端口跳跃（relay 侧）+ 与客户端跳跃的联动 | ✅ 已完成 | 小 `dport_refresh` 下长连接不断 |
 | **R4** | mux / 自定义映射 / 多目标地址透传验证 | ✅ 已完成 | 新增 relay 变体的 mux/FEC/自定义映射用例 |
-| **R5** | `--try`（tester） | 1–2 天 | 见 §7.2 |
+| **R5** | `--try`（tester） | ✅ 已完成 | 见 §7.2 |
 
 每个步骤单独提交，提交前执行：
 
@@ -440,3 +440,4 @@ Failure: NONE
 | 2026-11-01 | R2 完成：`relay/maintenance` 每秒执行空闲判定（255 秒强制、`udp_timeout` 三条件）与两侧独立保活；`relay/status` 输出两段式摘要；C++ 的 FEC 计数复制粘贴缺陷（§2.9 第 2 条）已修正；新增 `relay_keep_alive_stays_connected`。C++ 的 `expiring_handshakes` / `expiring_forwarders` / `expiring_kcp` 三张表在 Rust 侧由任务自行收尾（会话任务退出后保留 4 秒冲刷），因此不需要独立清理表 |
 | 2026-11-01 | R3 完成：`relay/port_hop` 在每次转发后按 `[forwarder].dport_refresh` 探测并切换 egress socket，复用 `transport::PortHop` 与 `drain_old_socket`；`RelaySession.egress_socket` 改为可替换。与 C++ 的两处有意偏离：探测失败按 `dport_refresh` 重试（C++ 一次失败即永久停止）、探测成功立即切换（C++ 需下一次发送）；新增 `relay_port_hopping_keeps_connection` |
 | 2026-11-01 | R4 完成：新增 relay 变体的 mux（双隧道 TCP+UDP、20 并发）、两段 FEC、自定义映射（`[custom_input]` + `ignore_destination_*`，验证 `user_input` 透传）用例；relay 本体无需改动，§7.1 的 T1–T5/T9 由自动化覆盖，T10（C++ 互通）仍需人工验收 |
+| 2026-11-01 | R5 完成：新增 `crates/tester`（`kcptube-tester`），`--try` 对「地址 × 端口」并发探测并输出与 C++ `PrintResults` 一致的文本；`main` 已接入，支持 client / relay 配置；新增 3 个单元测试与 2 个集成测试 |
